@@ -375,6 +375,10 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.55; }
   width: 100%; border: none; background: transparent;
   font-family: var(--font-ui); font-size: 1rem; color: var(--ink);
   padding: .32rem .35rem; border-radius: var(--radius-sm);
+  box-sizing: border-box; display: block;
+  resize: none; overflow: hidden;          /* wächst mit, kein Scrollbalken */
+  line-height: 1.5; min-height: 1.5em;
+  white-space: pre-wrap; overflow-wrap: break-word;
 }
 .block-input::placeholder { color: var(--muted); }
 .block-input:focus { outline: none; background: var(--surface-2); }
@@ -445,7 +449,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.55; }
   flex-shrink: 0; width: 1.6rem; text-align: center; font-size: 1rem;
 }
 .note-body { flex: 1; min-width: 0; }
-.note-text { word-break: break-word; line-height: 1.45; }
+.note-text { word-break: break-word; line-height: 1.45; white-space: pre-wrap; }
 .note-body .block-chips { padding: 0; margin-top: .3rem; }
 
 /* --- Aufgaben --- */

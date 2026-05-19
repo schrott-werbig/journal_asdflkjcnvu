@@ -1704,6 +1704,7 @@ const UI = {
     card.appendChild(U.make('div', { class: 'card-title' }, 'Journal'));
     card.appendChild(U.make('div', { class: 'journal-hint no-print', html:
       'Jede Zeile ist ein Block. <kbd>Enter</kbd> = neuer Block, '
+      + '<kbd>Shift</kbd>+<kbd>Enter</kbd> = Zeilenumbruch im Block, '
       + '<kbd>⌫</kbd> in leerer Zeile löscht sie. Klick auf das Symbol ändert '
       + 'den Typ. Mit <b>[[</b> Projekte und <b>@</b> Personen verknüpfen — '
       + 'noch nicht vorhandene lassen sich direkt anlegen.' }));
@@ -1771,7 +1772,7 @@ const UI = {
         title: 'Block-Typ ändern' }, [glyph]);
       symBtn.addEventListener('click', () => openSymbolMenu(symBtn, block, glyph));
 
-      const input = U.make('input', { type: 'text', class: 'block-input',
+      const input = U.make('textarea', { class: 'block-input', rows: '1',
         placeholder: 'Schreib etwas …' });
       input.value = block.content || '';
 
@@ -1781,9 +1782,16 @@ const UI = {
       const del = U.make('button', { class: 'block-del no-print',
         title: 'Block löschen' }, '✕');
 
+      /* Höhe automatisch an den Inhalt anpassen (Zeilenumbruch statt Scrollen). */
+      const autoGrow = () => {
+        input.style.height = 'auto';
+        input.style.height = input.scrollHeight + 'px';
+      };
+
       const onInput = () => {
         block.content = input.value;
         renderChips(block, chipEl);
+        autoGrow();
         persist();
       };
 
@@ -1801,7 +1809,8 @@ const UI = {
         // Offene Autovervollständigung fängt Navigationstasten zuerst ab.
         if (UI._acVisible() && UI._acHandleKey(e)) return;
 
-        if (e.key === 'Enter') {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          // Enter = neuer Block. Shift+Enter = Zeilenumbruch im selben Block.
           e.preventDefault();
           const idx = day.rapid_logging.indexOf(block);
           const nb = newBlock(block.symbol);
@@ -1824,12 +1833,25 @@ const UI = {
             pin.setSelectionRange(pin.value.length, pin.value.length);
           }
           persist();
-        } else if (e.key === 'ArrowUp') {
+        } else if (e.key === 'ArrowUp' && input.selectionStart === 0) {
+          // Nur am Textanfang in den vorherigen Block springen.
           const prev = row.previousElementSibling;
-          if (prev) { e.preventDefault(); prev.querySelector('.block-input').focus(); }
-        } else if (e.key === 'ArrowDown') {
+          if (prev) {
+            e.preventDefault();
+            const pin = prev.querySelector('.block-input');
+            pin.focus();
+            pin.setSelectionRange(pin.value.length, pin.value.length);
+          }
+        } else if (e.key === 'ArrowDown'
+                   && input.selectionStart === input.value.length) {
+          // Nur am Textende in den nächsten Block springen.
           const nx = row.nextElementSibling;
-          if (nx) { e.preventDefault(); nx.querySelector('.block-input').focus(); }
+          if (nx && nx.querySelector('.block-input')) {
+            e.preventDefault();
+            const nin = nx.querySelector('.block-input');
+            nin.focus();
+            nin.setSelectionRange(0, 0);
+          }
         }
       });
 
@@ -1837,6 +1859,9 @@ const UI = {
         // Kurze Verzögerung, damit Klicks im Popup noch ankommen.
         setTimeout(() => { if (!UI._acVisible()) UI._closePopups(); }, 160);
       });
+
+      // Anfangshöhe setzen, sobald die Zeile im DOM hängt.
+      requestAnimationFrame(autoGrow);
 
       del.addEventListener('click', () => {
         const idx = day.rapid_logging.indexOf(block);
