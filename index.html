@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <!-- user-scalable=yes laut Spezifikation: Zoom soll erlaubt bleiben -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, viewport-fit=cover">
+
+  <title>Digitales Bullet Journal</title>
+  <meta name="description" content="Bullet Journal mit Kalender-Integration — komplett lokal, offline-fähig.">
+
+  <!-- ===== PWA-Meta-Tags ===== -->
+  <meta name="theme-color" content="#33302a">
+  <meta name="color-scheme" content="light dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="BuJo PWA">
+  <meta name="mobile-web-app-capable" content="yes">
+
+  <!-- ===== Manifest (relativer Pfad — GitHub-Pages-tauglich) ===== -->
+  <link rel="manifest" href="./manifest.json">
+
+  <!-- ===== Icons (alle Pfade relativ) ===== -->
+  <link rel="icon" type="image/png" href="./icons/favicon.png">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="./icons/icon-152.png">
+  <link rel="apple-touch-icon" sizes="192x192" href="./icons/icon-192.png">
+
+  <!-- ===== Stylesheet (relativ) ===== -->
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+  <!-- ====================================================================
+       Haupt-Container der Anwendung
+       ==================================================================== -->
+  <div id="app" data-view="day">
+
+    <!-- ===== Kopfzeile ===== -->
+    <header class="topbar" role="banner">
+      <button id="sidebar-toggle" class="icon-btn" aria-label="Menü ein-/ausblenden" title="Menü">☰</button>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">●</span>
+        <span class="brand-text">Bullet&nbsp;Journal</span>
+      </div>
+      <div class="topbar-spacer"></div>
+      <button id="install-btn" class="text-btn" hidden>App installieren</button>
+      <button id="theme-toggle" class="icon-btn" aria-label="Hell-/Dunkelmodus umschalten" title="Theme">◐</button>
+      <button id="help-btn" class="icon-btn" aria-label="Hilfe / Tastaturkürzel" title="Hilfe (?)">?</button>
+    </header>
+
+    <!-- ===== Seitenleiste (Desktop / Tablet) ===== -->
+    <aside class="sidebar" id="sidebar" role="navigation" aria-label="Hauptnavigation">
+      <nav class="side-nav">
+        <button class="nav-link" data-nav="day">       <span class="nav-ico">◆</span> Heute</button>
+        <button class="nav-link" data-nav="year">      <span class="nav-ico">▦</span> Jahr</button>
+        <button class="nav-link" data-nav="month">     <span class="nav-ico">▤</span> Monat</button>
+        <button class="nav-link" data-nav="week">      <span class="nav-ico">▥</span> Woche</button>
+        <button class="nav-link" data-nav="collections"><span class="nav-ico">❑</span> Sammlungen</button>
+        <button class="nav-link" data-nav="tasks">     <span class="nav-ico">☑</span> Aufgaben</button>
+        <button class="nav-link" data-nav="search">    <span class="nav-ico">⌕</span> Suche</button>
+        <button class="nav-link" data-nav="settings">  <span class="nav-ico">⚙</span> Einstellungen</button>
+      </nav>
+      <div class="sidebar-foot">
+        <p class="sidebar-note">Alle Daten bleiben lokal auf diesem Gerät.</p>
+      </div>
+    </aside>
+
+    <!-- ===== Hauptbereich — Views werden von script.js gerendert ===== -->
+    <main id="main-view" class="main-view" role="main" tabindex="-1">
+      <div class="loading-state">Journal wird geladen …</div>
+    </main>
+
+    <!-- ===== Untere Navigationsleiste (Mobile) ===== -->
+    <nav class="bottom-nav" role="navigation" aria-label="Mobile Navigation">
+      <button class="bn-item" data-nav="day">      <span class="bn-ico">◆</span><span class="bn-lbl">Heute</span></button>
+      <button class="bn-item" data-nav="month">    <span class="bn-ico">▤</span><span class="bn-lbl">Kalender</span></button>
+      <button class="bn-item" data-nav="collections"><span class="bn-ico">❑</span><span class="bn-lbl">Sammlungen</span></button>
+      <button class="bn-item" data-nav="search">   <span class="bn-ico">⌕</span><span class="bn-lbl">Suche</span></button>
+      <button class="bn-item" data-nav="settings"> <span class="bn-ico">⚙</span><span class="bn-lbl">Mehr</span></button>
+    </nav>
+
+    <!-- ===== Schwebender Aktionsbutton (Schnellnotiz) ===== -->
+    <button id="fab" class="fab" aria-label="Neue Schnellnotiz" title="Schnellnotiz (n)">+</button>
+
+  </div><!-- /#app -->
+
+  <!-- ====================================================================
+       Modal-Wurzel — Inhalte werden dynamisch eingefügt
+       ==================================================================== -->
+  <div id="modal-root" class="modal-root" hidden>
+    <div class="modal-backdrop" data-close="1"></div>
+    <div class="modal-box" role="dialog" aria-modal="true">
+      <button class="modal-close" data-close="1" aria-label="Schließen">✕</button>
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <!-- ===== Hilfe-Overlay (Tastaturkürzel) ===== -->
+  <div id="help-overlay" class="modal-root" hidden>
+    <div class="modal-backdrop" data-close="1"></div>
+    <div class="modal-box help-box" role="dialog" aria-modal="true" aria-label="Tastaturkürzel">
+      <button class="modal-close" data-close="1" aria-label="Schließen">✕</button>
+      <h2>Tastaturkürzel</h2>
+      <ul class="shortcut-list">
+        <li><kbd>n</kbd><span>Neue Schnellnotiz</span></li>
+        <li><kbd>t</kbd><span>Neue Aufgabe im aktuellen Tag</span></li>
+        <li><kbd>d</kbd><span>Springe zu heute</span></li>
+        <li><kbd>j</kbd><span>Vorheriger Tag</span></li>
+        <li><kbd>k</kbd><span>Nächster Tag</span></li>
+        <li><kbd>s</kbd><span>Fokus auf Suchleiste</span></li>
+        <li><kbd>Esc</kbd><span>Suche / Modal schließen</span></li>
+        <li><kbd>?</kbd><span>Diese Hilfe anzeigen</span></li>
+      </ul>
+      <p class="help-hint">Auf dem Smartphone: in der Tagesansicht nach links/rechts
+         wischen, um zwischen Tagen zu blättern.</p>
+    </div>
+  </div>
+
+  <!-- ===== Toast-Benachrichtigungen ===== -->
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+
+  <!-- ===== CryptoJS (AES-256 für verschlüsselten Export/Import) ===== -->
+  <!-- Einzige externe Abhängigkeit; bei Offline-Nutzung greift ein Fallback. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+
+  <!-- ===== Anwendungslogik (relativer Pfad) ===== -->
+  <script src="./script.js"></script>
+</body>
+</html>

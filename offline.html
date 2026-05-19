@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Offline · BuJo PWA</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1.25rem;
+      padding: 2rem;
+      text-align: center;
+      background:
+        radial-gradient(circle, #c1bbad 1px, transparent 1.4px) 0 0 / 26px 26px,
+        #f3efe6;
+      color: #33302a;
+    }
+    @media (prefers-color-scheme: dark) {
+      body {
+        background:
+          radial-gradient(circle, #3a3833 1px, transparent 1.4px) 0 0 / 26px 26px,
+          #1c1b19;
+        color: #e8e3d8;
+      }
+    }
+    .emoji { font-size: 4.5rem; line-height: 1; }
+    h1 { font-family: Georgia, "Iowan Old Style", serif; font-size: 1.6rem; font-weight: 600; }
+    p { max-width: 22rem; color: #8a857a; line-height: 1.5; }
+    button {
+      margin-top: 0.5rem;
+      padding: 0.85rem 1.6rem;
+      font-size: 1rem;
+      font-weight: 600;
+      border: 2px solid currentColor;
+      border-radius: 10px;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      min-height: 44px;
+      touch-action: manipulation;
+    }
+    button:active { transform: scale(0.97); }
+  </style>
+</head>
+<body>
+  <div class="emoji">📓</div>
+  <h1>Du bist offline</h1>
+  <p>Keine Internetverbindung. Deine Journal-Daten liegen lokal auf diesem Gerät —
+     sobald die Verbindung zurück ist, kannst du normal weiterarbeiten.</p>
+  <button onclick="location.reload()">Erneut laden</button>
+  <script>
+    // Automatisch neu laden, sobald wieder eine Verbindung besteht.
+    window.addEventListener('online', function () { location.reload(); });
+  </script>
+</body>
+</html>
