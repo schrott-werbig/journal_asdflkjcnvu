@@ -16,11 +16,18 @@ Verschlüsselung des Exports.
 
 - **Vier Kalenderebenen** — Jahres-Heatmap, Monatsmatrix, Wochenraster mit
   Drag & Drop und eine ausführliche Tagesansicht.
-- **Rapid Logging** — acht Symbole (Aufgabe, Notiz, Event, Erledigt,
-  Priorität, Recherche, Idee, Telefonat).
+- **Block-Journal** — Tag für Tag in einem Block-Editor schreiben: jede Zeile
+  ist ein Block mit eigenem Symbol (acht Typen: Aufgabe, Notiz, Event,
+  Erledigt, Priorität, Recherche, Idee, Telefonat). Enter legt einen neuen
+  Block an, ein Klick auf das Symbol ändert den Typ.
+- **Inline-Verknüpfung** — beim Tippen verknüpfen `[[` Projekte und `@`
+  Personen; eine Autovervollständigung schlägt Vorhandenes vor und legt
+  Neue direkt an.
+- **Notizen-Seite** — alle Blöcke aller Tage in einer Liste, filterbar nach
+  Text, Typ, Projekt, Person und Zeitraum.
 - **Sammlungen** — Projekte, Personen, Wissensbasis und frei definierbare
   eigene Sammlungen mit benutzerdefinierten Feldern.
-- **Backlinks** — `[[Projekt]]` und `@Person` in Notizen erzeugen automatisch
+- **Backlinks** — `[[Projekt]]` und `@Person` erzeugen automatisch
   Querverweise zwischen Tagen, Projekten und Wissens-Einträgen.
 - **Aufgaben-Manager** — zentrale Übersicht mit Filtern, Sortierung,
   Paginierung (50 pro Seite) und Bulk-Erledigen.

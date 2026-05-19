@@ -452,13 +452,12 @@ const Calendar = {
  *  MODUL: heatmap — Aktivitäts-Heatmap des Jahreskalenders
  * ========================================================================== */
 const Heatmap = {
-  /* Zählt "Aktivität" eines Tages: Rapid-Logging + Tasks + Notiz. */
+  /* Zählt "Aktivität" eines Tages: Journal-Blöcke + Tasks. */
   dayScore(day) {
     if (!day) return 0;
     let s = 0;
     s += (day.rapid_logging || []).length;
     s += (day.tasks || []).length;
-    if (day.notes && day.notes.trim()) s += 1;
     return s;
   },
 
@@ -539,8 +538,8 @@ const Backlinks = {
   },
 
   /* Aktualisiert die backlinks-Arrays aller Wissens-Einträge:
-     ein Wissens-Eintrag wird mit Tagen verknüpft, deren Notizen [[Titel]]
-     enthalten. */
+     ein Wissens-Eintrag wird mit Tagen verknüpft, deren Journal-Blöcke
+     [[Titel]] enthalten. */
   async refreshKnowledgeBacklinks() {
     const knowledge = await DB.getAll('knowledge');
     const days = await DB.getAll('days');
@@ -548,7 +547,9 @@ const Backlinks = {
       const needle = '[[' + (k.title || '').toLowerCase() + ']]';
       const linked = [];
       for (const d of days) {
-        if ((d.notes || '').toLowerCase().includes(needle)) linked.push(d.id);
+        const hay = ((d.rapid_logging || []).map((b) => b.content || '').join('\n')
+          + '\n' + (d.notes || '')).toLowerCase();
+        if (hay.includes(needle)) linked.push(d.id);
       }
       k.backlinks = linked;
       await DB.put('knowledge', k);
@@ -577,6 +578,55 @@ const Backlinks = {
     // Zeilenumbrüche
     html = html.replace(/\n/g, '<br>');
     return html;
+  }
+};
+
+/* ========================================================================== *
+ *  MODUL: mentions — Auflösung von [[Projekt]] / @Person aus Block-Inhalten
+ * ----------------------------------------------------------------------------
+ *  Ein Journal-Block wird mit einem Projekt/einer Person verknüpft, wenn
+ *  dessen Name im Text als [[Name]] bzw. @Name vorkommt. Zusätzlich werden
+ *  ältere, fest gespeicherte project_id/person_id berücksichtigt.
+ * ========================================================================== */
+const Mentions = {
+  /* RegExp-Escape. */
+  _esc(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); },
+
+  /* Liefert alle Projekte, die in "content" als [[Name]] erwähnt werden. */
+  projectsIn(content, projects) {
+    const text = content || '';
+    return projects.filter((p) => {
+      if (!p.name) return false;
+      const re = new RegExp('\\[\\[\\s*' + Mentions._esc(p.name) + '\\s*\\]\\]', 'i');
+      return re.test(text);
+    });
+  },
+
+  /* Liefert alle Personen, die in "content" als @Name erwähnt werden. */
+  peopleIn(content, people) {
+    const text = content || '';
+    return people.filter((p) => {
+      if (!p.name) return false;
+      // @Name, gefolgt von Nicht-Wortzeichen oder Textende.
+      const re = new RegExp('@' + Mentions._esc(p.name) + '(?![\\wÄÖÜäöüß])', 'i');
+      return re.test(text);
+    });
+  },
+
+  /* Verknüpfte Projekt-IDs eines Blocks (Inhalt + evtl. gespeicherte ID). */
+  blockProjectIds(block, projects) {
+    const ids = new Set();
+    if (block.project_id) ids.add(block.project_id);
+    Mentions.projectsIn(block.content, projects).forEach((p) => ids.add(p.id));
+    return [...ids];
+  },
+
+  /* Verknüpfte Personen-IDs eines Blocks (Inhalt + evtl. gespeicherte ID). */
+  blockPersonIds(block, people) {
+    const ids = new Set();
+    if (block.person_id) ids.add(block.person_id);
+    Mentions.peopleIn(block.content, people).forEach((p) => ids.add(p.id));
+    return [...ids];
   }
 };
 
@@ -676,29 +726,26 @@ const Search = {
     };
     const match = (text) => !q || (text || '').toLowerCase().includes(q);
 
-    /* --- Tage: rapid_logging, notes, tasks --- */
+    /* --- Tage: Journal-Blöcke + Aufgaben --- */
     const days = await DB.getAll('days');
+    const projects = await DB.getAll('projects');
+    const people = await DB.getAll('people');
     for (const d of days) {
       if (!inRange(d.id)) continue;
 
       for (const r of (d.rapid_logging || [])) {
-        if (opts.projectId && r.project_id !== opts.projectId) continue;
-        if (opts.personId && r.person_id !== opts.personId) continue;
+        if (opts.projectId &&
+            !Mentions.blockProjectIds(r, projects).includes(opts.projectId)) continue;
+        if (opts.personId &&
+            !Mentions.blockPersonIds(r, people).includes(opts.personId)) continue;
         if (match(r.content)) {
           results.push({
-            type: 'Rapid Log', typeKey: 'rl',
+            type: 'Journal-Eintrag', typeKey: 'rl',
             title: `${r.symbol || '•'} ${r.content}`,
             preview: U.prettyDate(d.id),
             ymd: d.id, nav: 'day'
           });
         }
-      }
-      if (!opts.projectId && !opts.personId && match(d.notes)) {
-        results.push({
-          type: 'Notiz', typeKey: 'note',
-          title: 'Tagesnotiz', preview: (d.notes || '').slice(0, 110),
-          ymd: d.id, nav: 'day'
-        });
       }
       for (const t of (d.tasks || [])) {
         if (opts.projectId && t.project_id !== opts.projectId) continue;
@@ -1411,6 +1458,7 @@ const UI = {
         case 'year':        await UI.renderYear(main); break;
         case 'month':       await UI.renderMonth(main); break;
         case 'week':        await UI.renderWeek(main); break;
+        case 'notes':       await UI.renderNotes(main); break;
         case 'collections': await UI.renderCollections(main); break;
         case 'tasks':       await UI.renderTasks(main); break;
         case 'search':      await UI.renderSearch(main); break;
@@ -1626,11 +1674,8 @@ const UI = {
       main.appendChild(extBox);
     }
 
-    /* --- Rapid Logging --- */
-    main.appendChild(await UI._rapidLoggingCard(day, projects, people));
-
-    /* --- Tagesnotizen (Markdown) --- */
-    main.appendChild(UI._notesCard(day));
+    /* --- Journal: Block-Editor (Rapid Logging + Notizen vereint) --- */
+    main.appendChild(UI._journalCard(day, projects, people));
 
     /* --- Aufgabenliste --- */
     main.appendChild(await UI._tasksCard(day, projects, people));
@@ -1642,122 +1687,381 @@ const UI = {
     main.appendChild(UI._dayBacklinksCard(day));
   },
 
-  /* --- Rapid-Logging-Karte --- */
-  async _rapidLoggingCard(day, projects, people) {
-    const card = U.make('div', { class: 'card' });
-    card.appendChild(U.make('div', { class: 'card-title' }, 'Rapid Logging'));
+  /* ====================================================================== *
+   *  JOURNAL-BLOCK-EDITOR (vereint Rapid Logging & Tagesnotizen)
+   * ---------------------------------------------------------------------- *
+   *  Jede Zeile ist ein Block mit eigenem Symbol. Enter erzeugt einen neuen
+   *  Block, Backspace in einer leeren Zeile löscht sie. [[ und @ öffnen eine
+   *  Autovervollständigung, über die sich Projekte/Personen auch direkt
+   *  neu anlegen lassen.
+   * ====================================================================== */
+  _journalCard(day, projects, people) {
+    // Lokale, veränderbare Listen — werden bei Inline-Erstellung erweitert.
+    const projectList = projects.slice();
+    const peopleList = people.slice();
 
-    /* Symbol-Picker */
-    let chosen = RL_SYMBOLS[0].sym;
-    const picker = U.make('div', { class: 'symbol-picker no-print' });
-    RL_SYMBOLS.forEach((s, i) => {
-      const b = U.make('button', { class: 'sym-btn' + (i === 0 ? ' active' : '') }, [
-        U.make('span', { class: 'sym-glyph', text: s.sym }),
-        U.make('span', { class: 'sym-name', text: s.name })
-      ]);
-      b.addEventListener('click', () => {
-        chosen = s.sym;
-        U.qsa('.sym-btn', picker).forEach((x) => x.classList.remove('active'));
-        b.classList.add('active');
-      });
-      picker.appendChild(b);
-    });
-    card.appendChild(picker);
+    const card = U.make('div', { class: 'card journal-card' });
+    card.appendChild(U.make('div', { class: 'card-title' }, 'Journal'));
+    card.appendChild(U.make('div', { class: 'journal-hint no-print', html:
+      'Jede Zeile ist ein Block. <kbd>Enter</kbd> = neuer Block, '
+      + '<kbd>⌫</kbd> in leerer Zeile löscht sie. Klick auf das Symbol ändert '
+      + 'den Typ. Mit <b>[[</b> Projekte und <b>@</b> Personen verknüpfen — '
+      + 'noch nicht vorhandene lassen sich direkt anlegen.' }));
 
-    /* Eingabezeile */
-    const input = U.make('input', { type: 'text', placeholder: 'Eintrag …' });
-    const projSel = U.make('select', { class: 'no-print' });
-    projSel.appendChild(U.make('option', { value: '' }, '— Projekt —'));
-    projects.forEach((p) => projSel.appendChild(
-      U.make('option', { value: p.id }, p.name)));
-    const persSel = U.make('select', { class: 'no-print' });
-    persSel.appendChild(U.make('option', { value: '' }, '— Person —'));
-    people.forEach((p) => persSel.appendChild(
-      U.make('option', { value: p.id }, p.name)));
-    const addBtn = U.make('button', { class: 'btn btn-primary', text: 'Hinzufügen' });
+    const listEl = U.make('div', { class: 'block-list' });
+    card.appendChild(listEl);
 
-    const addEntry = async () => {
-      const txt = input.value.trim();
-      if (!txt) return;
-      day.rapid_logging.push({
-        symbol: chosen, content: txt, timestamp: U.nowIso(),
-        project_id: projSel.value || null, person_id: persSel.value || null
-      });
+    if (!day.rapid_logging) day.rapid_logging = [];
+
+    /* Debounced Speichern (inkl. Backlink-Aktualisierung). */
+    const persist = U.debounce(async () => {
       await DB.saveDay(day);
       await Backlinks.refreshKnowledgeBacklinks();
-      UI.render('day');
+    }, 600);
+
+    /* Neuen Block-Datensatz erzeugen. */
+    const newBlock = (symbol) => ({
+      id: U.uuid(), symbol: symbol || '-', content: '',
+      timestamp: U.nowIso(), project_id: null, person_id: null
+    });
+
+    /* Symbol-Auswahlmenü öffnen. */
+    const openSymbolMenu = (anchorBtn, block, glyphEl) => {
+      UI._closePopups();
+      const menu = U.make('div', { class: 'popmenu symbol-menu' });
+      RL_SYMBOLS.forEach((s) => {
+        const item = U.make('button', {
+          class: 'popmenu-item' + (s.sym === block.symbol ? ' active' : '') }, [
+          U.make('span', { class: 'pm-glyph', text: s.sym }),
+          U.make('span', { class: 'pm-label', text: s.name })
+        ]);
+        item.addEventListener('click', () => {
+          block.symbol = s.sym;
+          glyphEl.textContent = s.sym;
+          UI._closePopups();
+          persist();
+        });
+        menu.appendChild(item);
+      });
+      UI._showPopup(menu, anchorBtn);
     };
-    addBtn.addEventListener('click', addEntry);
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') addEntry(); });
 
-    card.appendChild(U.make('div', { class: 'inline-fields no-print',
-      style: 'margin-bottom:.6rem' }, [input, projSel, persSel, addBtn]));
+    /* Verknüpfungs-Chips eines Blocks rendern. */
+    const renderChips = (block, chipEl) => {
+      chipEl.innerHTML = '';
+      Mentions.projectsIn(block.content, projectList).forEach((p) => {
+        const c = U.make('span', { class: 'block-chip',
+          style: `border-left:3px solid ${p.farbe}`, text: p.name });
+        c.addEventListener('click', () => UI.openReferenceModal(p.name));
+        chipEl.appendChild(c);
+      });
+      Mentions.peopleIn(block.content, peopleList).forEach((p) => {
+        const c = U.make('span', { class: 'block-chip', text: '@' + p.name });
+        c.addEventListener('click', () => UI.openReferenceModal(p.name));
+        chipEl.appendChild(c);
+      });
+    };
 
-    /* Bestehende Einträge */
-    const list = U.make('div', { class: 'rl-list' });
-    if (!day.rapid_logging.length) {
-      list.appendChild(U.make('div', { class: 'empty',
-        text: 'Noch keine Einträge für diesen Tag.' }));
-    }
-    day.rapid_logging.forEach((r, idx) => {
-      const proj = projects.find((p) => p.id === r.project_id);
-      const pers = people.find((p) => p.id === r.person_id);
-      const meta = [];
-      if (proj) meta.push(U.make('span', { class: 'rl-tag',
-        style: `border-left:3px solid ${proj.farbe}`, text: proj.name }));
-      if (pers) meta.push(U.make('span', { class: 'rl-tag', text: '@' + pers.name }));
+    /* Eine Block-Zeile bauen. */
+    const makeRow = (block) => {
+      const row = U.make('div', { class: 'block-row' });
 
-      const del = U.make('button', { class: 'rl-del no-print', title: 'Löschen' }, '✕');
-      del.addEventListener('click', async () => {
-        day.rapid_logging.splice(idx, 1);
-        await DB.saveDay(day);
-        UI.render('day');
+      const glyph = U.make('span', { class: 'bg-glyph', text: block.symbol || '-' });
+      const symBtn = U.make('button', { class: 'block-symbol',
+        title: 'Block-Typ ändern' }, [glyph]);
+      symBtn.addEventListener('click', () => openSymbolMenu(symBtn, block, glyph));
+
+      const input = U.make('input', { type: 'text', class: 'block-input',
+        placeholder: 'Schreib etwas …' });
+      input.value = block.content || '';
+
+      const chipEl = U.make('div', { class: 'block-chips' });
+      renderChips(block, chipEl);
+
+      const del = U.make('button', { class: 'block-del no-print',
+        title: 'Block löschen' }, '✕');
+
+      const onInput = () => {
+        block.content = input.value;
+        renderChips(block, chipEl);
+        persist();
+      };
+
+      input.addEventListener('input', () => {
+        onInput();
+        UI._checkAutocomplete(input, {
+          projects: projectList, people: peopleList,
+          onPick: onInput,
+          onCreateProject: (p) => projectList.push(p),
+          onCreatePerson: (p) => peopleList.push(p)
+        });
       });
 
-      list.appendChild(U.make('div', { class: 'rl-row' }, [
-        U.make('span', { class: 'rl-sym', text: r.symbol }),
-        U.make('span', { class: 'rl-content' }, [
-          document.createTextNode(r.content + ' '), ...meta
-        ]),
-        del
-      ]));
+      input.addEventListener('keydown', (e) => {
+        // Offene Autovervollständigung fängt Navigationstasten zuerst ab.
+        if (UI._acVisible() && UI._acHandleKey(e)) return;
+
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const idx = day.rapid_logging.indexOf(block);
+          const nb = newBlock(block.symbol);
+          day.rapid_logging.splice(idx + 1, 0, nb);
+          const nrow = makeRow(nb);
+          row.after(nrow);
+          nrow.querySelector('.block-input').focus();
+          persist();
+        } else if (e.key === 'Backspace' && input.value === ''
+                   && input.selectionStart === 0) {
+          if (day.rapid_logging.length <= 1) return;   // letzten Block behalten
+          e.preventDefault();
+          const idx = day.rapid_logging.indexOf(block);
+          day.rapid_logging.splice(idx, 1);
+          const prev = row.previousElementSibling;
+          row.remove();
+          if (prev) {
+            const pin = prev.querySelector('.block-input');
+            pin.focus();
+            pin.setSelectionRange(pin.value.length, pin.value.length);
+          }
+          persist();
+        } else if (e.key === 'ArrowUp') {
+          const prev = row.previousElementSibling;
+          if (prev) { e.preventDefault(); prev.querySelector('.block-input').focus(); }
+        } else if (e.key === 'ArrowDown') {
+          const nx = row.nextElementSibling;
+          if (nx) { e.preventDefault(); nx.querySelector('.block-input').focus(); }
+        }
+      });
+
+      input.addEventListener('blur', () => {
+        // Kurze Verzögerung, damit Klicks im Popup noch ankommen.
+        setTimeout(() => { if (!UI._acVisible()) UI._closePopups(); }, 160);
+      });
+
+      del.addEventListener('click', () => {
+        const idx = day.rapid_logging.indexOf(block);
+        if (idx > -1) day.rapid_logging.splice(idx, 1);
+        row.remove();
+        if (!day.rapid_logging.length) {
+          const nb = newBlock('-');
+          day.rapid_logging.push(nb);
+          listEl.appendChild(makeRow(nb));
+        }
+        persist();
+      });
+
+      row.appendChild(symBtn);
+      row.appendChild(U.make('div', { class: 'block-body' }, [input, chipEl]));
+      row.appendChild(del);
+      return row;
+    };
+
+    // Mindestens ein Block, jeder mit ID.
+    if (!day.rapid_logging.length) day.rapid_logging.push(newBlock('-'));
+    day.rapid_logging.forEach((b) => {
+      if (!b.id) b.id = U.uuid();
+      listEl.appendChild(makeRow(b));
     });
-    card.appendChild(list);
+
+    /* "+ Neuer Block"-Knopf. */
+    const addBtn = U.make('button', { class: 'btn btn-sm no-print',
+      style: 'margin-top:.7rem', text: '+ Neuer Block' });
+    addBtn.addEventListener('click', () => {
+      const nb = newBlock('-');
+      day.rapid_logging.push(nb);
+      const nrow = makeRow(nb);
+      listEl.appendChild(nrow);
+      nrow.querySelector('.block-input').focus();
+      persist();
+    });
+    card.appendChild(addBtn);
+
     return card;
   },
 
-  /* --- Notizen-Karte mit Markdown-Vorschau --- */
-  _notesCard(day) {
-    const card = U.make('div', { class: 'card' });
-    const title = U.make('div', { class: 'card-title' }, 'Tagesnotizen');
-    card.appendChild(title);
+  /* ====================================================================== *
+   *  Popup-Infrastruktur (Symbol-Menü & Autovervollständigung)
+   * ====================================================================== */
+  _popupEl: null,
+  _ac: null,
 
-    const ta = U.make('textarea', {
-      placeholder: 'Notizen … Markdown: **fett** *kursiv* ### Überschrift '
-        + '- Liste  `Code`.  [[Projekt]] und @Person erzeugen Backlinks.',
-      rows: '5'
+  _ensurePopupHost() {
+    if (UI._popupEl) return;
+    UI._popupEl = U.make('div', { class: 'popup-host', hidden: true });
+    document.body.appendChild(UI._popupEl);
+    // Klick außerhalb schließt das Popup.
+    document.addEventListener('click', (e) => {
+      if (!UI._popupEl || UI._popupEl.hidden) return;
+      if (UI._popupEl.contains(e.target)) return;
+      if (e.target.closest && e.target.closest('.block-symbol')) return;
+      UI._closePopups();
+    }, true);
+    window.addEventListener('resize', () => UI._closePopups());
+  },
+
+  _showPopup(node, anchor) {
+    UI._ensurePopupHost();
+    UI._popupEl.innerHTML = '';
+    UI._popupEl.appendChild(node);
+    UI._popupEl.hidden = false;
+    const r = anchor.getBoundingClientRect();
+    const w = 260;
+    let left = Math.min(r.left, window.innerWidth - w - 8);
+    left = Math.max(8, left);
+    UI._popupEl.style.left = left + 'px';
+    // Unterhalb des Ankers, oder darüber, falls unten kein Platz ist.
+    const below = window.innerHeight - r.bottom;
+    if (below < 240) UI._popupEl.style.top = '';
+    else UI._popupEl.style.top = (r.bottom + 4) + 'px';
+    if (below < 240) {
+      UI._popupEl.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+    } else {
+      UI._popupEl.style.bottom = '';
+    }
+  },
+
+  _closePopups() {
+    if (UI._popupEl) { UI._popupEl.hidden = true; UI._popupEl.innerHTML = ''; }
+    UI._ac = null;
+  },
+
+  _acVisible() {
+    return !!(UI._ac && UI._popupEl && !UI._popupEl.hidden);
+  },
+
+  /* Farbe für ein neu angelegtes Projekt. */
+  _pickColor() {
+    const palette = ['#c8553d', '#3498db', '#2ecc71', '#9b59b6', '#e67e22',
+                     '#16a085', '#e74c3c', '#2c7da0', '#8e7cc3', '#d4a017'];
+    return palette[Math.floor(Math.random() * palette.length)];
+  },
+
+  /* Prüft den Text vor dem Cursor auf einen [[- oder @-Auslöser. */
+  _checkAutocomplete(input, ctx) {
+    const pos = input.selectionStart;
+    const before = input.value.slice(0, pos);
+    let type = null, token = '', start = -1, m;
+
+    m = before.match(/\[\[([^\]\[]*)$/);
+    if (m) { type = 'wiki'; token = m[1]; start = before.length - m[0].length; }
+    else {
+      // @ nur am Zeilenanfang oder nach einem Leerzeichen — so löst eine
+      // E-Mail-Adresse wie "name@firma" die Personensuche nicht aus.
+      m = before.match(/(^|\s)@([A-Za-zÄÖÜäöüß0-9_.\-]{0,30})$/);
+      if (m) { type = 'at'; token = m[2]; start = before.length - token.length - 1; }
+    }
+    if (!type) { UI._closePopups(); return; }
+
+    const ql = token.trim().toLowerCase();
+    const pool = type === 'wiki' ? ctx.projects : ctx.people;
+    let items = pool
+      .filter((p) => p.name && p.name.toLowerCase().includes(ql))
+      .slice(0, 8)
+      .map((p) => ({
+        label: p.name,
+        glyph: type === 'wiki' ? '◧' : '@',
+        sub: type === 'wiki' ? 'Projekt' : 'Person',
+        value: p.name
+      }));
+
+    // Option zum direkten Neu-Anlegen.
+    const exact = pool.some((p) => (p.name || '').toLowerCase() === ql);
+    if (ql && !exact) {
+      items.unshift({
+        label: token.trim(), glyph: '＋',
+        sub: type === 'wiki' ? 'Neues Projekt anlegen' : 'Neue Person anlegen',
+        value: token.trim(), create: true
+      });
+    }
+    if (!items.length) { UI._closePopups(); return; }
+
+    UI._ac = { input, type, start, items, active: 0, ctx };
+    UI._renderAc();
+  },
+
+  /* Zeichnet das Autocomplete-Menü. */
+  _renderAc() {
+    const ac = UI._ac;
+    if (!ac) return;
+    const menu = U.make('div', { class: 'popmenu autocomplete-menu' });
+    ac.items.forEach((it, i) => {
+      const row = U.make('button', {
+        class: 'popmenu-item' + (i === ac.active ? ' active' : '')
+          + (it.create ? ' is-create' : '') }, [
+        U.make('span', { class: 'pm-glyph', text: it.glyph }),
+        U.make('span', { class: 'pm-label', text: it.label }),
+        U.make('span', { class: 'pm-sub', text: it.sub })
+      ]);
+      // mousedown statt click: verhindert das Blur des Eingabefeldes.
+      row.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        UI._acPick(i);
+      });
+      menu.appendChild(row);
     });
-    ta.value = day.notes || '';
+    UI._showPopup(menu, ac.input);
+  },
 
-    const preview = U.make('div', { class: 'md-preview' });
-    const refreshPreview = () => {
-      preview.innerHTML = Backlinks.renderMarkdown(ta.value);
-      UI._bindWikiLinks(preview);
-    };
-    refreshPreview();
+  /* Übernimmt einen Autocomplete-Vorschlag (legt ggf. neu an). */
+  async _acPick(i) {
+    const ac = UI._ac;
+    if (!ac) return;
+    const it = ac.items[i];
+    const input = ac.input;
 
-    ta.addEventListener('input', U.debounce(async () => {
-      day.notes = ta.value;
-      await DB.saveDay(day);
-      await Backlinks.refreshKnowledgeBacklinks();
-      refreshPreview();
-    }, 500));
+    if (it.create) {
+      if (ac.type === 'wiki') {
+        const proj = {
+          id: U.uuid(), name: it.value, farbe: UI._pickColor(),
+          status: 'aktiv', description: '', created_at: U.nowIso()
+        };
+        await DB.put('projects', proj);
+        if (ac.ctx.onCreateProject) ac.ctx.onCreateProject(proj);
+        U.toast('Projekt „' + proj.name + '" angelegt', 'ok');
+      } else {
+        const pers = {
+          id: U.uuid(), name: it.value, email: '', tags: [],
+          created_at: U.nowIso()
+        };
+        await DB.put('people', pers);
+        if (ac.ctx.onCreatePerson) ac.ctx.onCreatePerson(pers);
+        U.toast('Person „' + pers.name + '" angelegt', 'ok');
+      }
+    }
 
-    card.appendChild(ta);
-    card.appendChild(U.make('div', { class: 'section-label',
-      style: 'margin-top:.7rem', text: 'Vorschau' }));
-    card.appendChild(preview);
-    return card;
+    // Vollständige Verknüpfung in den Text einsetzen.
+    const insert = ac.type === 'wiki' ? `[[${it.value}]] ` : `@${it.value} `;
+    const caret = input.selectionStart;
+    const v = input.value;
+    input.value = v.slice(0, ac.start) + insert + v.slice(caret);
+    const np = ac.start + insert.length;
+    input.setSelectionRange(np, np);
+    input.focus();
+
+    UI._closePopups();
+    if (ac.ctx.onPick) ac.ctx.onPick();
+  },
+
+  /* Tastatursteuerung im Autocomplete-Menü. */
+  _acHandleKey(e) {
+    const ac = UI._ac;
+    if (!ac) return false;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      ac.active = (ac.active + 1) % ac.items.length;
+      UI._renderAc(); return true;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      ac.active = (ac.active - 1 + ac.items.length) % ac.items.length;
+      UI._renderAc(); return true;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      UI._acPick(ac.active); return true;
+    }
+    if (e.key === 'Escape') { UI._closePopups(); return true; }
+    return false;
   },
 
   /* --- Aufgaben-Karte des Tages --- */
@@ -1869,8 +2173,7 @@ const UI = {
   _dayBacklinksCard(day) {
     const card = U.make('div', { class: 'card' });
     card.appendChild(U.make('div', { class: 'card-title' }, 'Backlinks dieses Tages'));
-    const text = (day.notes || '') + ' '
-      + (day.rapid_logging || []).map((r) => r.content).join(' ');
+    const text = (day.rapid_logging || []).map((r) => r.content || '').join(' ');
     const wikis = [...new Set(Backlinks.wikiLinks(text))];
     const ats = [...new Set(Backlinks.mentions(text))];
 
@@ -2045,14 +2348,16 @@ UI.renderMonth = async function (main) {
       moodDot
     ]));
 
-    /* Task/Notiz-Indikatoren */
+    /* Task/Block-Indikatoren */
     if (data) {
       const inds = U.make('div', { class: 'cal-indicators' });
       const openTasks = (data.tasks || []).filter((t) => !t.done).length;
       for (let i = 0; i < Math.min(openTasks, 4); i++) {
         inds.appendChild(U.make('span', { class: 'ind-dot ind-task' }));
       }
-      if (data.notes && data.notes.trim()) {
+      const blockCount = (data.rapid_logging || [])
+        .filter((b) => (b.content || '').trim()).length;
+      if (blockCount) {
         inds.appendChild(U.make('span', { class: 'ind-dot ind-note' }));
       }
       node.appendChild(inds);
@@ -2218,6 +2523,123 @@ UI.renderWeek = async function (main) {
   main.appendChild(grid);
   main.appendChild(U.make('div', { class: 'view-sub no-print',
     text: 'Tipp: Offene Aufgaben (⠿) lassen sich auf andere Tage ziehen.' }));
+};
+
+/* ========================================================================== *
+ *  UI: NOTIZEN-SEITE — alle Journal-Blöcke als filterbare Liste
+ * ========================================================================== */
+UI.renderNotes = async function (main) {
+  const days = await DB.getAll('days');
+  const projects = await DB.getAll('projects');
+  const people = await DB.getAll('people');
+
+  /* Alle Blöcke aller Tage einsammeln. */
+  const blocks = [];
+  days.forEach((d) => {
+    (d.rapid_logging || []).forEach((b) => {
+      if ((b.content || '').trim()) blocks.push({ ymd: d.id, block: b });
+    });
+  });
+  blocks.sort((a, b) => b.ymd.localeCompare(a.ymd));
+
+  main.innerHTML = '';
+  main.appendChild(U.make('div', { class: 'view-head' }, [
+    U.make('div', {}, [
+      U.make('h1', { class: 'view-title', text: 'Notizen' }),
+      U.make('div', { class: 'view-sub', text: blocks.length + ' Einträge insgesamt' })
+    ])
+  ]));
+
+  /* --- Filterleiste --- */
+  const fText = U.make('input', { type: 'text', placeholder: 'Text durchsuchen …' });
+
+  const fSym = U.make('select', {});
+  fSym.appendChild(U.make('option', { value: '' }, 'Alle Typen'));
+  RL_SYMBOLS.forEach((s) =>
+    fSym.appendChild(U.make('option', { value: s.sym }, `${s.sym}  ${s.name}`)));
+
+  const fProj = U.make('select', {});
+  fProj.appendChild(U.make('option', { value: '' }, 'Alle Projekte'));
+  projects.forEach((p) => fProj.appendChild(U.make('option', { value: p.id }, p.name)));
+
+  const fPers = U.make('select', {});
+  fPers.appendChild(U.make('option', { value: '' }, 'Alle Personen'));
+  people.forEach((p) => fPers.appendChild(U.make('option', { value: p.id }, p.name)));
+
+  const fFrom = U.make('input', { type: 'date' });
+  const fTo = U.make('input', { type: 'date' });
+
+  main.appendChild(U.make('div', { class: 'filter-bar no-print' },
+    [fText, fSym, fProj, fPers, fFrom, fTo]));
+
+  const listHost = U.make('div', {});
+  main.appendChild(listHost);
+
+  /* --- Filtern + Liste rendern --- */
+  const apply = () => {
+    const q = fText.value.trim().toLowerCase();
+    let rows = blocks.filter(({ ymd, block }) => {
+      if (q && !(block.content || '').toLowerCase().includes(q)) return false;
+      if (fSym.value && block.symbol !== fSym.value) return false;
+      if (fFrom.value && ymd < fFrom.value) return false;
+      if (fTo.value && ymd > fTo.value) return false;
+      if (fProj.value &&
+          !Mentions.blockProjectIds(block, projects).includes(fProj.value)) return false;
+      if (fPers.value &&
+          !Mentions.blockPersonIds(block, people).includes(fPers.value)) return false;
+      return true;
+    });
+
+    listHost.innerHTML = '';
+    listHost.appendChild(U.make('div', { class: 'muted',
+      style: 'margin:.2rem 0 .6rem', text: rows.length + ' Treffer' }));
+
+    if (!rows.length) {
+      listHost.appendChild(U.make('div', { class: 'empty',
+        text: 'Keine Notizen für diese Filter.' }));
+      return;
+    }
+
+    // Nach Tagen gruppieren.
+    let lastYmd = null;
+    rows.forEach(({ ymd, block }) => {
+      if (ymd !== lastYmd) {
+        lastYmd = ymd;
+        const head = U.make('div', { class: 'notes-day-head', text: U.prettyDate(ymd) });
+        head.addEventListener('click', () => {
+          Calendar.state.day = ymd;
+          UI.render('day');
+        });
+        listHost.appendChild(head);
+      }
+
+      const symName = (RL_SYMBOLS.find((s) => s.sym === block.symbol) || {}).name || '';
+      const chips = [];
+      Mentions.projectsIn(block.content, projects).forEach((p) =>
+        chips.push(U.make('span', { class: 'block-chip',
+          style: `border-left:3px solid ${p.farbe}`, text: p.name })));
+      Mentions.peopleIn(block.content, people).forEach((p) =>
+        chips.push(U.make('span', { class: 'block-chip', text: '@' + p.name })));
+
+      const item = U.make('div', { class: 'note-item' }, [
+        U.make('span', { class: 'note-sym', title: symName, text: block.symbol }),
+        U.make('div', { class: 'note-body' }, [
+          U.make('div', { class: 'note-text', text: block.content }),
+          chips.length ? U.make('div', { class: 'block-chips' }, chips) : null
+        ])
+      ]);
+      item.addEventListener('click', () => {
+        Calendar.state.day = ymd;
+        UI.render('day');
+      });
+      listHost.appendChild(item);
+    });
+  };
+
+  fText.addEventListener('input', U.debounce(apply, 200));
+  [fSym, fProj, fPers, fFrom, fTo].forEach((e) =>
+    e.addEventListener('change', apply));
+  apply();
 };
 
 /* ========================================================================== *
@@ -3340,6 +3762,60 @@ UI._openImportModal = function (file) {
 };
 
 /* ========================================================================== *
+ *  MODUL: migration — Datenmodell aktuell halten
+ * ----------------------------------------------------------------------------
+ *  Wandelt frühere Tagesnotizen (Feld "notes") einmalig in Journal-Blöcke um
+ *  und stellt sicher, dass jeder Block eine ID besitzt. Idempotent: der
+ *  Marker _notesMigrated verhindert mehrfaches Ausführen.
+ * ========================================================================== */
+const Migration = {
+  REFL_MARKER: '__monatsreflexion__',
+
+  async run() {
+    const days = await DB.getAll('days');
+    let touched = 0;
+
+    for (const d of days) {
+      let changed = false;
+      if (!Array.isArray(d.rapid_logging)) { d.rapid_logging = []; changed = true; }
+
+      // Jeder Block braucht eine eindeutige ID.
+      for (const b of d.rapid_logging) {
+        if (!b.id) { b.id = U.uuid(); changed = true; }
+        if (b.symbol == null) { b.symbol = '-'; changed = true; }
+      }
+
+      // Einmalige Übernahme alter Tagesnotizen in Blöcke.
+      if (!d._notesMigrated) {
+        const raw = d.notes || '';
+        const parts = raw.split(Migration.REFL_MARKER);
+        const plain = (parts[0] || '').trim();
+        const refl = parts.length > 1 ? (parts[1] || '').trim() : '';
+
+        if (plain) {
+          // Jede nicht-leere Zeile wird zu einem Notiz-Block.
+          plain.split('\n').map((s) => s.trim()).filter(Boolean)
+            .forEach((line) => {
+              d.rapid_logging.push({
+                id: U.uuid(), symbol: '-', content: line,
+                timestamp: d.updated_at || d.created_at || U.nowIso(),
+                project_id: null, person_id: null
+              });
+            });
+        }
+        // Monatsreflexion bleibt im notes-Feld erhalten.
+        d.notes = refl ? (Migration.REFL_MARKER + '\n' + refl) : '';
+        d._notesMigrated = true;
+        changed = true;
+      }
+
+      if (changed) { await DB.put('days', d); touched++; }
+    }
+    if (touched) log(`Migration: ${touched} Tag(e) aktualisiert`);
+  }
+};
+
+/* ========================================================================== *
  *  MODUL: app — Bootstrap / Initialisierung
  * ========================================================================== */
 const App = {
@@ -3457,6 +3933,9 @@ const App = {
         await Demo.seed();
       }
     }
+
+    // Datenmodell migrieren (alte Notizen -> Journal-Blöcke).
+    await Migration.run();
 
     // Wiederkehrende Aufgaben bis heute generieren.
     await Recurring.generate();

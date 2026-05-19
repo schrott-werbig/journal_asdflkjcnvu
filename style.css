@@ -338,6 +338,116 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.55; }
 .sym-btn .sym-name { font-size: .58rem; color: var(--muted); }
 .sym-btn.active { border-color: var(--accent); background: var(--accent-soft); }
 
+/* ====================================================================== *
+ *  Journal-Block-Editor (Rapid Logging + Notizen vereint)
+ * ====================================================================== */
+.journal-hint {
+  font-size: .76rem; color: var(--muted); line-height: 1.5;
+  margin-bottom: .7rem;
+}
+.journal-hint kbd {
+  font-family: var(--font-mono); font-size: .7rem;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 4px; padding: 0 4px;
+}
+.journal-hint b { color: var(--accent); font-family: var(--font-mono); }
+
+.block-list { display: flex; flex-direction: column; }
+.block-row {
+  display: flex; align-items: flex-start; gap: .5rem;
+  padding: .28rem .15rem;
+  border-bottom: 1px dotted var(--line);
+}
+.block-row:last-child { border-bottom: none; }
+
+.block-symbol {
+  flex-shrink: 0; width: 30px; height: 30px; margin-top: 1px;
+  border: 1.5px solid var(--line); background: var(--surface);
+  border-radius: var(--radius-sm); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color .12s, background .12s;
+}
+.block-symbol:hover { border-color: var(--accent); background: var(--accent-soft); }
+.bg-glyph { font-size: 1rem; line-height: 1; }
+
+.block-body { flex: 1; min-width: 0; }
+.block-input {
+  width: 100%; border: none; background: transparent;
+  font-family: var(--font-ui); font-size: 1rem; color: var(--ink);
+  padding: .32rem .35rem; border-radius: var(--radius-sm);
+}
+.block-input::placeholder { color: var(--muted); }
+.block-input:focus { outline: none; background: var(--surface-2); }
+
+.block-chips { display: flex; flex-wrap: wrap; gap: .3rem; padding: 0 .35rem; }
+.block-chip {
+  display: inline-block; font-size: .68rem; padding: 1px 7px;
+  border-radius: 6px; background: var(--surface-2); color: var(--ink-soft);
+  cursor: pointer;
+}
+.block-chip:hover { background: var(--accent-soft); color: var(--accent); }
+
+.block-del {
+  flex-shrink: 0; background: none; border: none; color: var(--muted);
+  cursor: pointer; font-size: .9rem; padding: .3rem .25rem;
+  opacity: 0; transition: opacity .12s;
+}
+.block-row:hover .block-del,
+.block-row:focus-within .block-del { opacity: 1; }
+.block-del:hover { color: #d9534f; }
+
+/* ====================================================================== *
+ *  Popup-Menüs (Symbolwahl & Autovervollständigung)
+ * ====================================================================== */
+.popup-host { position: fixed; z-index: 300; }
+.popup-host[hidden] { display: none; }
+.popmenu {
+  background: var(--surface); border: 1.5px solid var(--line);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow);
+  max-height: 256px; overflow-y: auto; min-width: 210px; padding: .25rem;
+}
+.popmenu-item {
+  display: flex; align-items: center; gap: .55rem; width: 100%;
+  padding: .42rem .5rem; border: none; background: none; cursor: pointer;
+  border-radius: 6px; text-align: left; color: var(--ink);
+  font-family: var(--font-ui); font-size: .86rem;
+}
+.popmenu-item:hover,
+.popmenu-item.active { background: var(--accent-soft); }
+.pm-glyph {
+  width: 1.5rem; text-align: center; font-size: 1rem; flex-shrink: 0;
+}
+.pm-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.pm-sub { font-size: .68rem; color: var(--muted); flex-shrink: 0; }
+.popmenu-item.is-create { color: var(--accent); font-weight: 600; }
+.popmenu-item.is-create .pm-glyph { color: var(--accent); }
+.symbol-menu { min-width: 180px; }
+
+/* ====================================================================== *
+ *  Notizen-Seite
+ * ====================================================================== */
+.notes-day-head {
+  font-family: var(--font-display); font-size: .92rem; font-weight: 700;
+  color: var(--ink-soft); margin: 1rem 0 .35rem;
+  padding-bottom: .2rem; border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.notes-day-head:first-child { margin-top: 0; }
+.notes-day-head:hover { color: var(--accent); }
+.note-item {
+  display: flex; align-items: flex-start; gap: .6rem;
+  padding: .5rem .35rem; border-bottom: 1px dotted var(--line);
+  cursor: pointer; border-radius: var(--radius-sm);
+}
+.note-item:hover { background: var(--surface-2); }
+.note-sym {
+  flex-shrink: 0; width: 1.6rem; text-align: center; font-size: 1rem;
+}
+.note-body { flex: 1; min-width: 0; }
+.note-text { word-break: break-word; line-height: 1.45; }
+.note-body .block-chips { padding: 0; margin-top: .3rem; }
+
 /* --- Aufgaben --- */
 .task-row {
   display: flex; align-items: flex-start; gap: .6rem;
@@ -725,6 +835,10 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.55; }
   }
   .cal-grid, .week-grid { break-inside: avoid; }
   .cal-cell, .week-col { border: 1px solid #999; }
+  /* Block-Editor druckt als saubere Liste */
+  .block-symbol { border: none !important; background: none !important; }
+  .block-input { color: #000; }
+  .block-row { border-bottom: 1px dotted #bbb; }
   .view-title { font-size: 18pt; }
   body { font-size: 11pt; color: #000; }
   a { color: #000; text-decoration: none; }
