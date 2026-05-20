@@ -516,7 +516,13 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.55; }
 }
 .task-main { flex: 1; min-width: 0; }
 .task-text { word-break: break-word; }
+.task-text-click { cursor: pointer; }
+.task-text-click:hover { color: var(--accent); }
 .task-row.done .task-text { text-decoration: line-through; color: var(--muted); }
+
+/* Klickbare Tabellenzeilen (Aufgaben-Manager) */
+.clickable-row { cursor: pointer; }
+.clickable-row:hover { background: var(--surface-2); }
 .task-info { font-size: .72rem; color: var(--muted); margin-top: 2px; }
 .task-info .chip { margin-right: .35rem; }
 .chip {
@@ -841,13 +847,22 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.55; }
 .privacy-box ul { margin: .4rem 0 0 1.1rem; }
 
 /* Backlinks */
-.backlink-list { display: flex; flex-direction: column; gap: .35rem; }
+.backlink-list { display: flex; flex-direction: column; gap: .5rem; }
 .backlink {
-  font-size: .82rem; padding: .4rem .55rem;
+  font-size: .88rem; padding: .55rem .7rem;
   background: var(--surface-2); border-radius: var(--radius-sm);
   cursor: pointer;
+  display: flex; flex-direction: column; gap: .35rem;
 }
 .backlink:hover { background: var(--accent-soft); }
+.backlink-date {
+  font-weight: 600; color: var(--ink); font-size: .82rem;
+  border-bottom: 1px solid var(--line); padding-bottom: .25rem;
+}
+.backlink-snippet {
+  color: var(--ink-soft); line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+}
 .bl-syntax { color: var(--accent); font-weight: 600; }
 
 /* Markdown-Vorschau */

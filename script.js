@@ -515,22 +515,40 @@ const Backlinks = {
   },
 
   /* Sucht in allen Tagen nach Verweisen auf einen Projekt- oder Personennamen.
-     Gibt eine Liste { ymd, snippet } zurück. */
+     Gibt eine Liste { ymd, snippets } zurück, wobei "snippets" alle
+     Journal-Blöcke des Tages enthält, die den Namen erwähnen. */
   async findReferences(name) {
     const days = await DB.getAll('days');
     const needleWiki = '[[' + name.toLowerCase() + ']]';
     const needleAt = '@' + name.toLowerCase();
     const hits = [];
     for (const d of days) {
-      const haystacks = [];
-      if (d.notes) haystacks.push(d.notes);
-      for (const r of (d.rapid_logging || [])) haystacks.push(r.content || '');
-      for (const t of (d.tasks || [])) haystacks.push(t.text || '');
-      const joined = haystacks.join('\n').toLowerCase();
-      if (joined.includes(needleWiki) || joined.includes(needleAt)) {
-        // passenden Schnipsel extrahieren
-        const src = haystacks.join(' · ');
-        hits.push({ ymd: d.id, snippet: src.slice(0, 140) });
+      const matches = [];
+
+      // Journal-Blöcke: jeder Treffer einzeln als ganzer Satz.
+      for (const r of (d.rapid_logging || [])) {
+        const txt = (r.content || '').toLowerCase();
+        if (txt.includes(needleWiki) || txt.includes(needleAt)) {
+          matches.push((r.symbol || '•') + ' ' + r.content);
+        }
+      }
+
+      // Aufgaben des Tages mitberücksichtigen.
+      for (const t of (d.tasks || [])) {
+        const txt = (t.text || '').toLowerCase();
+        if (txt.includes(needleWiki) || txt.includes(needleAt)) {
+          matches.push('☐ ' + t.text);
+        }
+      }
+
+      // Notizen-Feld (Legacy / Monatsreflexion) ebenfalls.
+      const notesLower = (d.notes || '').toLowerCase();
+      if (notesLower.includes(needleWiki) || notesLower.includes(needleAt)) {
+        matches.push(d.notes);
+      }
+
+      if (matches.length) {
+        hits.push({ ymd: d.id, snippets: matches, snippet: matches.join('\n') });
       }
     }
     hits.sort((a, b) => b.ymd.localeCompare(a.ymd));
@@ -1615,6 +1633,126 @@ const UI = {
     setTimeout(() => text.focus(), 80);
   },
 
+  /* --- Aufgaben-Bearbeiten-Modal --------------------------------------- */
+  async openTaskEditModal(task, day) {
+    const projects = await DB.getAll('projects');
+    const people = await DB.getAll('people');
+
+    const text = U.make('input', { type: 'text', value: task.text || '',
+      placeholder: 'Was ist zu tun?' });
+    const due = U.make('input', { type: 'date', value: task.due_date || '' });
+
+    const projSel = U.make('select', {});
+    projSel.appendChild(U.make('option', { value: '' }, '— Projekt —'));
+    projects.forEach((p) => {
+      const opt = U.make('option', { value: p.id }, p.name);
+      if (p.id === task.project_id) opt.selected = true;
+      projSel.appendChild(opt);
+    });
+
+    const persSel = U.make('select', {});
+    persSel.appendChild(U.make('option', { value: '' }, '— Person —'));
+    people.forEach((p) => {
+      const opt = U.make('option', { value: p.id }, p.name);
+      if (p.id === task.person_id) opt.selected = true;
+      persSel.appendChild(opt);
+    });
+
+    const recSel = U.make('select', {});
+    [['', 'Nicht wiederkehrend'], ['daily', 'Täglich'],
+     ['weekly', 'Wöchentlich'], ['monthly', 'Monatlich']]
+      .forEach(([v, l]) => {
+        const opt = U.make('option', { value: v }, l);
+        if (v === (task.recurring || '')) opt.selected = true;
+        recSel.appendChild(opt);
+      });
+
+    const doneCb = U.make('input', { type: 'checkbox' });
+    doneCb.checked = !!task.done;
+
+    /* Wenn das Datum verändert wird, muss der Task ggf. den Tages-Datensatz
+       wechseln — wir holen das beim Speichern nach. */
+    const save = U.make('button', { class: 'btn btn-primary btn-block',
+      text: 'Änderungen speichern' });
+    save.addEventListener('click', async () => {
+      const txt = text.value.trim();
+      if (!txt) { U.toast('Bitte einen Text eingeben', 'warn'); return; }
+
+      const newDue = due.value || null;
+      // Soll die Aufgabe in einen anderen Tag verschoben werden?
+      // Regel: wenn ein neues Datum gesetzt wurde und dieses sich von der
+      // aktuellen Day-ID unterscheidet, ziehen wir den Eintrag um.
+      const moveToDay = (newDue && newDue !== day.id) ? newDue : null;
+
+      task.text = txt;
+      task.due_date = newDue;
+      task.project_id = projSel.value || null;
+      task.person_id = persSel.value || null;
+      const oldRecurring = task.recurring;
+      task.recurring = recSel.value || null;
+      const wasDone = task.done;
+      task.done = doneCb.checked;
+      if (task.done && !wasDone) {
+        Mobile.haptic();
+        if (task.recurring) task.last_completed = U.today();
+      }
+      if (!task.done) task.last_completed = null;
+
+      if (moveToDay) {
+        // Aus aktuellem Tag entfernen, in neuen Tag einfügen.
+        const i = day.tasks.indexOf(task);
+        if (i > -1) day.tasks.splice(i, 1);
+        await DB.saveDay(day);
+        const target = await DB.getDay(moveToDay);
+        target.tasks.push(task);
+        await DB.saveDay(target);
+      } else {
+        await DB.saveDay(day);
+      }
+
+      if (task.recurring && task.recurring !== oldRecurring) {
+        await Recurring.generate();
+      }
+      UI.closeModal();
+      U.toast('Aufgabe gespeichert', 'ok');
+      UI.render(UI.current);
+    });
+
+    const del = U.make('button', { class: 'btn btn-danger btn-block',
+      style: 'margin-top:.5rem', text: 'Aufgabe löschen' });
+    del.addEventListener('click', async () => {
+      const i = day.tasks.indexOf(task);
+      if (i > -1) day.tasks.splice(i, 1);
+      await DB.saveDay(day);
+      UI.closeModal();
+      U.toast('Aufgabe gelöscht');
+      UI.render(UI.current);
+    });
+
+    const doneRow = U.make('label', { class: 'check-row',
+      style: 'display:flex;align-items:center;gap:.5rem;margin:.4rem 0' },
+      [doneCb, document.createTextNode(' Aufgabe ist erledigt')]);
+
+    const box = U.make('div', {}, [
+      U.make('div', { class: 'field' }, [
+        U.make('label', { text: 'Aufgabe' }), text]),
+      doneRow,
+      U.make('div', { class: 'field' }, [
+        U.make('label', { text: 'Fälligkeitsdatum' }), due]),
+      U.make('div', { class: 'inline-fields' }, [
+        U.make('div', { class: 'field' }, [
+          U.make('label', { text: 'Projekt' }), projSel]),
+        U.make('div', { class: 'field' }, [
+          U.make('label', { text: 'Person' }), persSel])]),
+      U.make('div', { class: 'field' }, [
+        U.make('label', { text: 'Wiederholung' }), recSel]),
+      save,
+      del
+    ]);
+    UI.openModal('Aufgabe bearbeiten', box);
+    setTimeout(() => text.focus(), 80);
+  },
+
   /* ====================================================================== *
    *  TAGESANSICHT (Hauptansicht)
    * ====================================================================== */
@@ -2210,6 +2348,10 @@ const UI = {
       info.appendChild(chip);
     }
 
+    const edit = U.make('button', { class: 'rl-del no-print',
+      title: 'Bearbeiten' }, '✎');
+    edit.addEventListener('click', () => UI.openTaskEditModal(t, day));
+
     const del = U.make('button', { class: 'rl-del no-print', title: 'Löschen' }, '✕');
     del.addEventListener('click', async () => {
       const i = day.tasks.indexOf(t);
@@ -2218,11 +2360,14 @@ const UI = {
       UI.render(UI.current);
     });
 
+    const text = U.make('div', { class: 'task-text task-text-click',
+      text: t.text, title: 'Klicken zum Bearbeiten' });
+    text.addEventListener('click', () => UI.openTaskEditModal(t, day));
+
     return U.make('div', { class: 'task-row' + (t.done ? ' done' : '') }, [
       cb,
-      U.make('div', { class: 'task-main' }, [
-        U.make('div', { class: 'task-text', text: t.text }), info
-      ]),
+      U.make('div', { class: 'task-main' }, [text, info]),
+      edit,
       del
     ]);
   },
@@ -2922,11 +3067,12 @@ UI.openReferenceModal = async function (name) {
       text: 'Keine Tage mit dieser Verknüpfung gefunden.' }));
   }
   refs.forEach((r) => {
+    const snippets = r.snippets || (r.snippet ? [r.snippet] : []);
+    const snippetNodes = snippets.map((s) =>
+      U.make('div', { class: 'backlink-snippet', text: s }));
     const item = U.make('div', { class: 'backlink' }, [
-      U.make('div', { style: 'font-weight:600',
-        text: U.prettyDate(r.ymd) }),
-      U.make('div', { class: 'muted', style: 'font-size:.76rem',
-        text: r.snippet })
+      U.make('div', { class: 'backlink-date', text: U.prettyDate(r.ymd) }),
+      ...snippetNodes
     ]);
     item.addEventListener('click', () => {
       Calendar.state.day = r.ymd;
@@ -3163,11 +3309,13 @@ UI._renderRefList = function (host, refs, emptyText) {
     list.appendChild(U.make('div', { class: 'empty', text: emptyText }));
   }
   refs.forEach((r) => {
+    const snippets = r.snippets || (r.snippet ? [r.snippet] : []);
+    const snippetNodes = snippets.map((s) =>
+      U.make('div', { class: 'backlink-snippet', text: s }));
+
     const item = U.make('div', { class: 'backlink' }, [
-      U.make('div', { style: 'font-weight:600', text: U.prettyDate(r.ymd) }),
-      r.snippet
-        ? U.make('div', { class: 'muted', style: 'font-size:.76rem', text: r.snippet })
-        : null
+      U.make('div', { class: 'backlink-date', text: U.prettyDate(r.ymd) }),
+      ...snippetNodes
     ]);
     item.addEventListener('click', () => {
       Calendar.state.day = r.ymd;
@@ -4013,7 +4161,7 @@ UI.renderTasks = async function (main) {
       }
 
       const over = !t.done && t.due_date && t.due_date < U.today();
-      const tr = U.make('tr', {}, [
+      const tr = U.make('tr', { class: 'clickable-row' }, [
         U.make('td', {}, cb),
         U.make('td', {}, [
           U.make('span', { style: t.done ? 'text-decoration:line-through;color:var(--muted)' : '',
@@ -4028,11 +4176,13 @@ UI.renderTasks = async function (main) {
         U.make('td', { text: pers ? pers.name : '—' }),
         linkCell
       ]);
-      // Klick auf Zeile (außer Checkbox/Link) öffnet den Tag.
-      tr.addEventListener('click', (e) => {
+      // Klick auf den Aufgabentext öffnet das Bearbeiten-Modal.
+      // Checkbox, Chips und Verknüpfungs-Chip behalten ihre eigene Funktion.
+      tr.addEventListener('click', async (e) => {
         if (e.target.closest('input,.chip')) return;
-        Calendar.state.day = t._ymd;
-        UI.render('day');
+        const day = await DB.getDay(t._ymd);
+        const real = (day.tasks || []).find((x) => x.id === t.id);
+        if (real) UI.openTaskEditModal(real, day);
       });
       table.appendChild(tr);
     });
