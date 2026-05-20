@@ -28,9 +28,9 @@
  * ========================================================================== */
 const CONFIG = {
   DB_NAME: 'bujo_db',
-  DB_VERSION: 1,
+  DB_VERSION: 2,
   STORES: ['days', 'projects', 'people', 'knowledge', 'collections',
-           'future_log', 'external_events'],
+           'future_log', 'external_events', 'notes'],
   TASKS_PER_PAGE: 50,          // Paginierung der Aufgaben-Sammlung
   AUTOBACKUP_EVERY: 10,        // Auto-Backup nach jeder n-ten Änderung
   LS_PREFIX: 'bujo_',          // Präfix für localStorage-Schlüssel
@@ -1441,6 +1441,8 @@ const UI = {
 
   /* --- Zentrale Render-Weiche ------------------------------------------- */
   async render(view, swipeDir) {
+    // Sub-Ansichten zurücksetzen, wenn die Hauptansicht wechselt.
+    if (view !== 'collections' && UI.current !== view) UI._collSub = null;
     UI.current = view;
     const main = U.el('main-view');
     U.el('app').setAttribute('data-view', view);
@@ -1680,9 +1682,6 @@ const UI = {
     /* --- Aufgabenliste --- */
     main.appendChild(await UI._tasksCard(day, projects, people));
 
-    /* --- Mood --- */
-    main.appendChild(UI._moodCard(day));
-
     /* --- Backlinks dieses Tages --- */
     main.appendChild(UI._dayBacklinksCard(day));
   },
@@ -1763,6 +1762,52 @@ const UI = {
       });
     };
 
+    /* Block in eine echte Aufgabe übernehmen (verknüpft, Block bleibt). */
+    const blockToTask = async (block) => {
+      const text = (block.content || '').trim();
+      if (!text) { U.toast('Block ist leer', 'warn'); return; }
+      // Vorhandene Aufgabe mit identischem _fromBlock vermeiden.
+      const already = (day.tasks || []).some((t) => t._fromBlock === block.id);
+      if (already) {
+        U.toast('Aufgabe ist bereits verknüpft', 'warn');
+        return;
+      }
+      day.tasks = day.tasks || [];
+      day.tasks.push({
+        id: U.uuid(),
+        text,
+        done: false,
+        due_date: null,
+        project_id: null,
+        person_id: null,
+        recurring: null,
+        last_completed: null,
+        external_event_id: null,
+        _fromBlock: block.id
+      });
+      await DB.saveDay(day);
+      U.toast('Aufgabe erstellt', 'ok');
+      UI.render('day');
+    };
+
+    /* Block in der Reihenfolge verschieben. */
+    const moveBlock = async (block, delta) => {
+      const arr = day.rapid_logging;
+      const i = arr.indexOf(block);
+      const j = i + delta;
+      if (i < 0 || j < 0 || j >= arr.length) return;
+      arr.splice(i, 1);
+      arr.splice(j, 0, block);
+      await DB.saveDay(day);
+      // Nur die Reihenfolge im DOM neu sortieren — keinen kompletten Re-Render.
+      const rows = U.qsa('.block-row', listEl);
+      const moved = rows[i];
+      const ref = delta > 0 ? rows[j].nextElementSibling : rows[j];
+      listEl.insertBefore(moved, ref);
+      const inp = moved.querySelector('.block-input');
+      if (inp) inp.focus();
+    };
+
     /* Eine Block-Zeile bauen. */
     const makeRow = (block) => {
       const row = U.make('div', { class: 'block-row' });
@@ -1778,6 +1823,17 @@ const UI = {
 
       const chipEl = U.make('div', { class: 'block-chips' });
       renderChips(block, chipEl);
+
+      /* Aktions-Knöpfe rechts (rauf/runter/in Aufgabe/löschen). */
+      const upBtn = U.make('button', { class: 'block-act no-print',
+        title: 'Nach oben' }, '↑');
+      upBtn.addEventListener('click', () => moveBlock(block, -1));
+      const dnBtn = U.make('button', { class: 'block-act no-print',
+        title: 'Nach unten' }, '↓');
+      dnBtn.addEventListener('click', () => moveBlock(block, 1));
+      const taskBtn = U.make('button', { class: 'block-act no-print',
+        title: 'Als Aufgabe übernehmen' }, '→☐');
+      taskBtn.addEventListener('click', () => blockToTask(block));
 
       const del = U.make('button', { class: 'block-del no-print',
         title: 'Block löschen' }, '✕');
@@ -1877,7 +1933,8 @@ const UI = {
 
       row.appendChild(symBtn);
       row.appendChild(U.make('div', { class: 'block-body' }, [input, chipEl]));
-      row.appendChild(del);
+      row.appendChild(U.make('div', { class: 'block-actions no-print' },
+        [upBtn, dnBtn, taskBtn, del]));
       return row;
     };
 
@@ -2170,30 +2227,6 @@ const UI = {
     ]);
   },
 
-  /* --- Mood-Karte --- */
-  _moodCard(day) {
-    const card = U.make('div', { class: 'card' });
-    card.appendChild(U.make('div', { class: 'card-title' }, 'Stimmung'));
-    const emojis = ['😞', '🙁', '😐', '🙂', '😄'];
-    const row = U.make('div', { class: 'mood-row' });
-    emojis.forEach((em, i) => {
-      const lvl = i + 1;
-      const b = U.make('button', {
-        class: 'mood-btn' + (day.mood === lvl ? ' active' : ''),
-        style: day.mood === lvl ? `border-color:var(--mood-${lvl})` : '',
-        text: em
-      });
-      b.addEventListener('click', async () => {
-        day.mood = (day.mood === lvl) ? null : lvl;
-        await DB.saveDay(day);
-        UI.render('day');
-      });
-      row.appendChild(b);
-    });
-    card.appendChild(row);
-    return card;
-  },
-
   /* --- Backlinks-Karte des Tages --- */
   _dayBacklinksCard(day) {
     const card = U.make('div', { class: 'card' });
@@ -2363,15 +2396,9 @@ UI.renderMonth = async function (main) {
         + (cell.ymd === U.today() ? ' today' : '')
     });
 
-    /* Tagesnummer + Mood-Punkt */
-    const moodDot = data && data.mood
-      ? U.make('span', { class: 'cal-mood-dot',
-          style: `background:var(--mood-${data.mood})` })
-      : null;
-    node.appendChild(U.make('div', { class: 'cal-daynum' }, [
-      document.createTextNode(String(cell.day)),
-      moodDot
-    ]));
+    /* Tagesnummer */
+    node.appendChild(U.make('div', { class: 'cal-daynum',
+      text: String(cell.day) }));
 
     /* Task/Block-Indikatoren */
     if (data) {
@@ -2487,12 +2514,10 @@ UI.renderWeek = async function (main) {
           text: (e.allDay ? '' : U.timeOf(e.start) + ' ') + e.title }));
       });
 
-    /* Task-Count + Mood-Emoji */
+    /* Task-Count */
     const openTasks = data ? (data.tasks || []).filter((t) => !t.done).length : 0;
-    const moodEmoji = data && data.mood
-      ? ['😞', '🙁', '😐', '🙂', '😄'][data.mood - 1] : '·';
     col.appendChild(U.make('div', { class: 'week-meta',
-      text: `${openTasks} offen   ${moodEmoji}` }));
+      text: `${openTasks} offen` }));
 
     /* Klick öffnet Tagesansicht */
     col.addEventListener('click', (e) => {
@@ -2551,14 +2576,178 @@ UI.renderWeek = async function (main) {
 };
 
 /* ========================================================================== *
- *  UI: NOTIZEN-SEITE — alle Journal-Blöcke als filterbare Liste
+ *  UI: NOTIZEN-SEITE — zwei Reiter: Journal-Einträge und eigenständige Notizen
  * ========================================================================== */
+UI._notesTab = 'standalone';
+
 UI.renderNotes = async function (main) {
+  main.innerHTML = '';
+  main.appendChild(U.make('div', { class: 'view-head' }, [
+    U.make('h1', { class: 'view-title', text: 'Notizen' })
+  ]));
+
+  /* Reiter-Umschalter */
+  const tabStandalone = U.make('button', { class: 'tab-btn' }, 'Eigenständig');
+  const tabJournal = U.make('button', { class: 'tab-btn' }, 'Aus dem Journal');
+  const refreshTabs = () => {
+    tabStandalone.classList.toggle('active', UI._notesTab === 'standalone');
+    tabJournal.classList.toggle('active', UI._notesTab === 'journal');
+  };
+  tabStandalone.addEventListener('click', () => {
+    UI._notesTab = 'standalone'; UI.renderNotes(main);
+  });
+  tabJournal.addEventListener('click', () => {
+    UI._notesTab = 'journal'; UI.renderNotes(main);
+  });
+  refreshTabs();
+  main.appendChild(U.make('div', { class: 'tab-bar no-print' },
+    [tabStandalone, tabJournal]));
+
+  if (UI._notesTab === 'standalone') {
+    await UI._renderStandaloneNotes(main);
+  } else {
+    await UI._renderJournalNotes(main);
+  }
+};
+
+/* --- Eigenständige Notizen (Store "notes") ---------------------------- */
+UI._renderStandaloneNotes = async function (main) {
+  const notes = await DB.getAll('notes');
+  const projects = await DB.getAll('projects');
+  const people = await DB.getAll('people');
+  notes.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+
+  /* "+ Neue Notiz"-Knopf */
+  const newBtn = U.make('button', { class: 'btn btn-primary',
+    text: '+ Neue Notiz' });
+  newBtn.addEventListener('click', () => UI.openStandaloneNote(null));
+  main.appendChild(U.make('div', { class: 'btn-row no-print',
+    style: 'margin-bottom:.8rem' }, [newBtn]));
+
+  /* Filterleiste */
+  const fText = U.make('input', { type: 'text',
+    placeholder: 'Text durchsuchen …' });
+  const fTag = U.make('input', { type: 'text', placeholder: 'Tag' });
+  main.appendChild(U.make('div', { class: 'filter-bar no-print' },
+    [fText, fTag]));
+
+  const listHost = U.make('div', {});
+  main.appendChild(listHost);
+
+  const apply = () => {
+    const q = fText.value.trim().toLowerCase();
+    const tag = fTag.value.trim().toLowerCase();
+    let rows = notes.filter((n) => {
+      if (q && !((n.title || '') + ' ' + (n.content || '')).toLowerCase().includes(q))
+        return false;
+      if (tag && !(n.tags || []).map((t) => t.toLowerCase()).includes(tag))
+        return false;
+      return true;
+    });
+    listHost.innerHTML = '';
+    listHost.appendChild(U.make('div', { class: 'muted',
+      style: 'margin:.2rem 0 .6rem', text: rows.length + ' Notiz(en)' }));
+    if (!rows.length) {
+      listHost.appendChild(U.make('div', { class: 'empty',
+        text: notes.length
+          ? 'Keine Treffer.'
+          : 'Noch keine eigenständigen Notizen. Klick auf „+ Neue Notiz".' }));
+      return;
+    }
+    rows.forEach((n) => {
+      const chips = [];
+      Mentions.projectsIn(n.content, projects).forEach((p) =>
+        chips.push(U.make('span', { class: 'block-chip',
+          style: `border-left:3px solid ${p.farbe}`, text: p.name })));
+      Mentions.peopleIn(n.content, people).forEach((p) =>
+        chips.push(U.make('span', { class: 'block-chip', text: '@' + p.name })));
+      (n.tags || []).forEach((t) =>
+        chips.push(U.make('span', { class: 'block-chip', text: '#' + t })));
+
+      const item = U.make('div', { class: 'note-item' }, [
+        U.make('span', { class: 'note-sym', text: '≣' }),
+        U.make('div', { class: 'note-body' }, [
+          U.make('div', { class: 'note-text',
+            html: '<strong>' + U.esc(n.title || '(ohne Titel)') + '</strong><br>'
+              + U.esc((n.content || '').slice(0, 220))
+              + ((n.content || '').length > 220 ? '…' : '') }),
+          chips.length ? U.make('div', { class: 'block-chips' }, chips) : null,
+          U.make('div', { class: 'muted', style: 'font-size:.72rem;margin-top:.3rem',
+            text: 'Bearbeitet ' + (n.updated_at
+              ? new Date(n.updated_at).toLocaleString('de-DE') : '—') })
+        ])
+      ]);
+      item.addEventListener('click', () => UI.openStandaloneNote(n));
+      listHost.appendChild(item);
+    });
+  };
+  fText.addEventListener('input', U.debounce(apply, 200));
+  fTag.addEventListener('input', U.debounce(apply, 200));
+  apply();
+};
+
+/* --- Modal/Seite zum Bearbeiten einer eigenständigen Notiz ------------- */
+UI.openStandaloneNote = async function (existing) {
+  const isNew = !existing;
+  const note = existing || {
+    id: U.uuid(), title: '', content: '', tags: [],
+    created_at: U.nowIso(), updated_at: U.nowIso()
+  };
+
+  const title = U.make('input', { type: 'text', placeholder: 'Titel' });
+  title.value = note.title || '';
+  const content = U.make('textarea', { rows: '12',
+    placeholder: 'Notizinhalt … [[Projekt]] und @Person verknüpfen.' });
+  content.value = note.content || '';
+  const tagsIn = U.make('input', { type: 'text',
+    placeholder: 'Tags, durch Komma getrennt' });
+  tagsIn.value = (note.tags || []).join(', ');
+
+  const save = U.make('button', { class: 'btn btn-primary btn-block',
+    text: isNew ? 'Notiz anlegen' : 'Änderungen speichern' });
+  save.addEventListener('click', async () => {
+    note.title = title.value.trim();
+    note.content = content.value;
+    note.tags = tagsIn.value.split(',').map((s) => s.trim()).filter(Boolean);
+    note.updated_at = U.nowIso();
+    await DB.put('notes', note);
+    UI.closeModal();
+    U.toast(isNew ? 'Notiz angelegt' : 'Gespeichert', 'ok');
+    UI.renderNotes(U.el('main-view'));
+  });
+
+  const box = U.make('div', {}, [
+    U.make('div', { class: 'field' }, [
+      U.make('label', { text: 'Titel' }), title]),
+    U.make('div', { class: 'field' }, [
+      U.make('label', { text: 'Inhalt' }), content]),
+    U.make('div', { class: 'field' }, [
+      U.make('label', { text: 'Tags' }), tagsIn]),
+    save
+  ]);
+
+  if (!isNew) {
+    const del = U.make('button', { class: 'btn btn-danger btn-block',
+      style: 'margin-top:.5rem', text: 'Notiz löschen' });
+    del.addEventListener('click', async () => {
+      await DB.del('notes', note.id);
+      UI.closeModal();
+      U.toast('Notiz gelöscht');
+      UI.renderNotes(U.el('main-view'));
+    });
+    box.appendChild(del);
+  }
+
+  UI.openModal(isNew ? 'Neue Notiz' : 'Notiz bearbeiten', box);
+  setTimeout(() => title.focus(), 80);
+};
+
+/* --- Journal-Blöcke als filterbare Liste (bisherige Logik) ------------- */
+UI._renderJournalNotes = async function (main) {
   const days = await DB.getAll('days');
   const projects = await DB.getAll('projects');
   const people = await DB.getAll('people');
 
-  /* Alle Blöcke aller Tage einsammeln. */
   const blocks = [];
   days.forEach((d) => {
     (d.rapid_logging || []).forEach((b) => {
@@ -2567,40 +2756,26 @@ UI.renderNotes = async function (main) {
   });
   blocks.sort((a, b) => b.ymd.localeCompare(a.ymd));
 
-  main.innerHTML = '';
-  main.appendChild(U.make('div', { class: 'view-head' }, [
-    U.make('div', {}, [
-      U.make('h1', { class: 'view-title', text: 'Notizen' }),
-      U.make('div', { class: 'view-sub', text: blocks.length + ' Einträge insgesamt' })
-    ])
-  ]));
-
-  /* --- Filterleiste --- */
-  const fText = U.make('input', { type: 'text', placeholder: 'Text durchsuchen …' });
-
+  const fText = U.make('input', { type: 'text',
+    placeholder: 'Text durchsuchen …' });
   const fSym = U.make('select', {});
   fSym.appendChild(U.make('option', { value: '' }, 'Alle Typen'));
   RL_SYMBOLS.forEach((s) =>
     fSym.appendChild(U.make('option', { value: s.sym }, `${s.sym}  ${s.name}`)));
-
   const fProj = U.make('select', {});
   fProj.appendChild(U.make('option', { value: '' }, 'Alle Projekte'));
   projects.forEach((p) => fProj.appendChild(U.make('option', { value: p.id }, p.name)));
-
   const fPers = U.make('select', {});
   fPers.appendChild(U.make('option', { value: '' }, 'Alle Personen'));
   people.forEach((p) => fPers.appendChild(U.make('option', { value: p.id }, p.name)));
-
   const fFrom = U.make('input', { type: 'date' });
   const fTo = U.make('input', { type: 'date' });
-
   main.appendChild(U.make('div', { class: 'filter-bar no-print' },
     [fText, fSym, fProj, fPers, fFrom, fTo]));
 
   const listHost = U.make('div', {});
   main.appendChild(listHost);
 
-  /* --- Filtern + Liste rendern --- */
   const apply = () => {
     const q = fText.value.trim().toLowerCase();
     let rows = blocks.filter(({ ymd, block }) => {
@@ -2621,11 +2796,9 @@ UI.renderNotes = async function (main) {
 
     if (!rows.length) {
       listHost.appendChild(U.make('div', { class: 'empty',
-        text: 'Keine Notizen für diese Filter.' }));
+        text: 'Keine Journal-Einträge für diese Filter.' }));
       return;
     }
-
-    // Nach Tagen gruppieren.
     let lastYmd = null;
     rows.forEach(({ ymd, block }) => {
       if (ymd !== lastYmd) {
@@ -2637,7 +2810,6 @@ UI.renderNotes = async function (main) {
         });
         listHost.appendChild(head);
       }
-
       const symName = (RL_SYMBOLS.find((s) => s.sym === block.symbol) || {}).name || '';
       const chips = [];
       Mentions.projectsIn(block.content, projects).forEach((p) =>
@@ -2645,7 +2817,6 @@ UI.renderNotes = async function (main) {
           style: `border-left:3px solid ${p.farbe}`, text: p.name })));
       Mentions.peopleIn(block.content, people).forEach((p) =>
         chips.push(U.make('span', { class: 'block-chip', text: '@' + p.name })));
-
       const item = U.make('div', { class: 'note-item' }, [
         U.make('span', { class: 'note-sym', title: symName, text: block.symbol }),
         U.make('div', { class: 'note-body' }, [
@@ -2660,7 +2831,6 @@ UI.renderNotes = async function (main) {
       listHost.appendChild(item);
     });
   };
-
   fText.addEventListener('input', U.debounce(apply, 200));
   [fSym, fProj, fPers, fFrom, fTo].forEach((e) =>
     e.addEventListener('change', apply));
@@ -2834,11 +3004,17 @@ UI.openFutureLog = async function () {
 
 /* --- SAMMLUNGEN-ÜBERSICHT ---------------------------------------------- */
 UI.renderCollections = async function (main) {
+  /* Sub-Routing innerhalb der Sammlungen-Ansicht. */
+  if (UI._collSub) {
+    return UI._renderCollectionDetail(main, UI._collSub);
+  }
+
   const projects = await DB.getAll('projects');
   const people = await DB.getAll('people');
   const knowledge = await DB.getAll('knowledge');
   const custom = (await DB.getAll('collections'))
     .filter((c) => c.type === 'custom');
+  const days = await DB.getAll('days');
 
   main.innerHTML = '';
   main.appendChild(U.make('div', { class: 'view-head' }, [
@@ -2857,78 +3033,501 @@ UI.renderCollections = async function (main) {
   main.appendChild(U.make('div', { class: 'btn-row no-print',
     style: 'margin-bottom:1rem' }, [newProj, newPers, newKnow, newColl]));
 
+  /* Hilfsfunktion: Anzahl offener/erledigter Aufgaben für ein Projekt. */
+  const projectStats = (pid) => {
+    let open = 0, done = 0;
+    days.forEach((d) => (d.tasks || []).forEach((t) => {
+      if (t.project_id === pid) { t.done ? done++ : open++; }
+    }));
+    return { open, done };
+  };
+
+  /* Eine Listenzeile bauen. */
+  const makeRow = (icon, name, meta, onClick, accentColor) => {
+    const row = U.make('div', { class: 'list-row' }, [
+      U.make('span', { class: 'lr-icon' + (accentColor ? ' lr-icon-color' : ''),
+        style: accentColor ? `background:${accentColor}` : '', text: icon }),
+      U.make('div', { class: 'lr-body' }, [
+        U.make('div', { class: 'lr-title', text: name }),
+        meta ? U.make('div', { class: 'lr-meta', text: meta }) : null
+      ]),
+      U.make('span', { class: 'lr-arrow', text: '›' })
+    ]);
+    row.addEventListener('click', onClick);
+    return row;
+  };
+
   /* --- Projekte --- */
   main.appendChild(U.make('div', { class: 'section-label', text: 'Projekte' }));
-  const projGrid = U.make('div', { class: 'coll-grid' });
+  const projList = U.make('div', { class: 'list-group' });
   if (!projects.length) {
-    projGrid.appendChild(U.make('div', { class: 'empty', text: 'Keine Projekte.' }));
+    projList.appendChild(U.make('div', { class: 'empty', text: 'Keine Projekte.' }));
   }
   projects.forEach((p) => {
-    const card = U.make('div', { class: 'coll-card',
-      style: `border-left-color:${p.farbe}` }, [
-      U.make('h3', { text: p.name }),
-      U.make('div', { class: 'coll-meta',
-        text: `${p.status}${p.description ? ' · ' + p.description : ''}` })
-    ]);
-    card.addEventListener('click', () => UI.openProjectDetail(p));
-    projGrid.appendChild(card);
+    const s = projectStats(p.id);
+    const meta = [p.status, `${s.open} offen`, `${s.done} erledigt`,
+      p.description].filter(Boolean).join(' · ');
+    projList.appendChild(makeRow('◧', p.name, meta,
+      () => { UI._collSub = { kind: 'project', id: p.id };
+              UI.render('collections'); },
+      p.farbe));
   });
-  main.appendChild(projGrid);
+  main.appendChild(projList);
 
   /* --- Personen --- */
   main.appendChild(U.make('div', { class: 'section-label',
     style: 'margin-top:1.2rem', text: 'Personen' }));
-  const persGrid = U.make('div', { class: 'coll-grid' });
+  const persList = U.make('div', { class: 'list-group' });
   if (!people.length) {
-    persGrid.appendChild(U.make('div', { class: 'empty', text: 'Keine Personen.' }));
+    persList.appendChild(U.make('div', { class: 'empty', text: 'Keine Personen.' }));
   }
   people.forEach((p) => {
-    const card = U.make('div', { class: 'coll-card' }, [
-      U.make('h3', { text: p.name }),
-      U.make('div', { class: 'coll-meta',
-        text: [(p.tags || []).join(', '), p.email].filter(Boolean).join(' · ') })
-    ]);
-    card.addEventListener('click', () => UI.openPersonDetail(p));
-    persGrid.appendChild(card);
+    const meta = [(p.tags || []).join(', '), p.email]
+      .filter(Boolean).join(' · ') || '—';
+    persList.appendChild(makeRow('@', p.name, meta,
+      () => { UI._collSub = { kind: 'person', id: p.id };
+              UI.render('collections'); }));
   });
-  main.appendChild(persGrid);
+  main.appendChild(persList);
 
   /* --- Wissen --- */
   main.appendChild(U.make('div', { class: 'section-label',
     style: 'margin-top:1.2rem', text: 'Wissensbasis' }));
-  const knowGrid = U.make('div', { class: 'coll-grid' });
+  const knowList = U.make('div', { class: 'list-group' });
   if (!knowledge.length) {
-    knowGrid.appendChild(U.make('div', { class: 'empty', text: 'Keine Wissens-Einträge.' }));
+    knowList.appendChild(U.make('div', { class: 'empty', text: 'Keine Wissens-Einträge.' }));
   }
   knowledge.forEach((k) => {
-    const card = U.make('div', { class: 'coll-card' }, [
-      U.make('h3', { text: k.title }),
-      U.make('div', { class: 'coll-meta',
-        text: (k.excerpt || '').slice(0, 80) + '…' })
-    ]);
-    card.addEventListener('click', () => UI.openKnowledgeDetail(k));
-    knowGrid.appendChild(card);
+    const meta = (k.excerpt || '').slice(0, 110)
+      + ((k.excerpt || '').length > 110 ? '…' : '');
+    knowList.appendChild(makeRow('✦', k.title, meta,
+      () => { UI._collSub = { kind: 'knowledge', id: k.id };
+              UI.render('collections'); }));
   });
-  main.appendChild(knowGrid);
+  main.appendChild(knowList);
 
   /* --- Benutzerdefinierte Sammlungen --- */
   main.appendChild(U.make('div', { class: 'section-label',
     style: 'margin-top:1.2rem', text: 'Eigene Sammlungen' }));
-  const customGrid = U.make('div', { class: 'coll-grid' });
+  const customList = U.make('div', { class: 'list-group' });
   if (!custom.length) {
-    customGrid.appendChild(U.make('div', { class: 'empty',
+    customList.appendChild(U.make('div', { class: 'empty',
       text: 'Noch keine eigenen Sammlungen.' }));
   }
   custom.forEach((c) => {
-    const card = U.make('div', { class: 'coll-card' }, [
-      U.make('h3', { text: c.name }),
-      U.make('div', { class: 'coll-meta',
-        text: `${(c.entries || []).length} Einträge · ${(c.custom_fields || []).length} Felder` })
-    ]);
-    card.addEventListener('click', () => UI.openCustomCollectionDetail(c));
-    customGrid.appendChild(card);
+    const meta = `${(c.entries || []).length} Einträge · `
+      + `${(c.custom_fields || []).length} Felder`;
+    customList.appendChild(makeRow('❑', c.name, meta,
+      () => { UI._collSub = { kind: 'custom', id: c.id };
+              UI.render('collections'); }));
   });
-  main.appendChild(customGrid);
+  main.appendChild(customList);
+};
+
+/* --- Detail-Unterseite einer Sammlung (Zurück-Pfeil oben) ------------- */
+UI._renderCollectionDetail = async function (main, sub) {
+  main.innerHTML = '';
+  const back = U.make('button', { class: 'btn-back no-print',
+    title: 'Zurück zur Übersicht' }, '← Zurück');
+  back.addEventListener('click', () => { UI._collSub = null; UI.render('collections'); });
+  main.appendChild(back);
+
+  if (sub.kind === 'project') {
+    const p = await DB.get('projects', sub.id);
+    if (!p) { UI._collSub = null; return UI.render('collections'); }
+    return UI._renderProjectDetail(main, p);
+  }
+  if (sub.kind === 'person') {
+    const p = await DB.get('people', sub.id);
+    if (!p) { UI._collSub = null; return UI.render('collections'); }
+    return UI._renderPersonDetail(main, p);
+  }
+  if (sub.kind === 'knowledge') {
+    const k = await DB.get('knowledge', sub.id);
+    if (!k) { UI._collSub = null; return UI.render('collections'); }
+    return UI._renderKnowledgeDetail(main, k);
+  }
+  if (sub.kind === 'custom') {
+    const c = await DB.get('collections', sub.id);
+    if (!c) { UI._collSub = null; return UI.render('collections'); }
+    return UI._renderCustomCollDetail(main, c);
+  }
+};
+
+/* ====================================================================== *
+ *  Hilfsfunktion: Eintrags-Liste verknüpfter Tage (gemeinsam für Detail)
+ * ====================================================================== */
+UI._renderRefList = function (host, refs, emptyText) {
+  const list = U.make('div', { class: 'backlink-list' });
+  if (!refs.length) {
+    list.appendChild(U.make('div', { class: 'empty', text: emptyText }));
+  }
+  refs.forEach((r) => {
+    const item = U.make('div', { class: 'backlink' }, [
+      U.make('div', { style: 'font-weight:600', text: U.prettyDate(r.ymd) }),
+      r.snippet
+        ? U.make('div', { class: 'muted', style: 'font-size:.76rem', text: r.snippet })
+        : null
+    ]);
+    item.addEventListener('click', () => {
+      Calendar.state.day = r.ymd;
+      UI._collSub = null;
+      UI.render('day');
+    });
+    list.appendChild(item);
+  });
+  host.appendChild(list);
+};
+
+/* ====================================================================== *
+ *  Projekt-Detailseite
+ * ====================================================================== */
+UI._renderProjectDetail = async function (main, p) {
+  const refs = await Backlinks.findReferences(p.name);
+  const days = await DB.getAll('days');
+  let open = 0, doneN = 0;
+  days.forEach((d) => (d.tasks || []).forEach((t) => {
+    if (t.project_id === p.id) { t.done ? doneN++ : open++; }
+  }));
+
+  main.appendChild(U.make('div', { class: 'view-head' }, [
+    U.make('div', { class: 'detail-title-row' }, [
+      U.make('span', { class: 'detail-swatch', style: `background:${p.farbe}` }),
+      U.make('h1', { class: 'view-title', text: p.name })
+    ])
+  ]));
+
+  /* --- Status-Pills --- */
+  main.appendChild(U.make('div', { class: 'tag-pills' }, [
+    U.make('span', { class: 'pill', text: p.status }),
+    U.make('span', { class: 'pill', text: `${open} offen` }),
+    U.make('span', { class: 'pill', text: `${doneN} erledigt` })
+  ]));
+  if (p.description) {
+    main.appendChild(U.make('p', { class: 'muted', style: 'margin:.7rem 0',
+      text: p.description }));
+  }
+
+  /* --- Bearbeiten-Karte --- */
+  const card = U.make('div', { class: 'card', style: 'margin-top:1rem' });
+  card.appendChild(U.make('div', { class: 'card-title' }, 'Bearbeiten'));
+
+  const nameInp = U.make('input', { type: 'text', value: p.name });
+  const colorInp = U.make('input', { type: 'color', value: p.farbe || '#c8553d' });
+  const statusInp = U.make('select', {});
+  ['aktiv', 'archiviert'].forEach((s) => statusInp.appendChild(
+    U.make('option', { value: s, selected: s === p.status ? '' : null }, s)));
+  const descInp = U.make('input', { type: 'text', value: p.description || '',
+    placeholder: 'Beschreibung' });
+
+  const saveBtn = U.make('button', { class: 'btn btn-primary',
+    text: 'Speichern' });
+  saveBtn.addEventListener('click', async () => {
+    if (!nameInp.value.trim()) { U.toast('Name fehlt', 'warn'); return; }
+    p.name = nameInp.value.trim();
+    p.farbe = colorInp.value;
+    p.status = statusInp.value;
+    p.description = descInp.value.trim();
+    await DB.put('projects', p);
+    await Backlinks.refreshKnowledgeBacklinks();
+    U.toast('Gespeichert', 'ok');
+    UI.render('collections');
+  });
+
+  card.appendChild(U.make('div', { class: 'field' }, [
+    U.make('label', { text: 'Name' }), nameInp]));
+  card.appendChild(U.make('div', { class: 'inline-fields' }, [
+    U.make('div', { class: 'field' }, [U.make('label', { text: 'Farbe' }), colorInp]),
+    U.make('div', { class: 'field' }, [U.make('label', { text: 'Status' }), statusInp])
+  ]));
+  card.appendChild(U.make('div', { class: 'field' }, [
+    U.make('label', { text: 'Beschreibung' }), descInp]));
+  card.appendChild(saveBtn);
+  main.appendChild(card);
+
+  /* --- Verknüpfte Tage --- */
+  const refCard = U.make('div', { class: 'card' });
+  refCard.appendChild(U.make('div', { class: 'card-title' }, 'Verknüpfte Tage'));
+  refCard.appendChild(U.make('div', { class: 'muted', style: 'margin-bottom:.4rem',
+    text: 'Tage, die [[' + p.name + ']] in Journal-Blöcken nennen.' }));
+  UI._renderRefList(refCard, refs, 'Noch keine verknüpften Tage.');
+  main.appendChild(refCard);
+
+  /* --- Aufgaben dieses Projekts --- */
+  const taskCard = U.make('div', { class: 'card' });
+  taskCard.appendChild(U.make('div', { class: 'card-title' }, 'Aufgaben'));
+  const projTasks = [];
+  days.forEach((d) => (d.tasks || []).forEach((t) => {
+    if (t.project_id === p.id) projTasks.push({ ymd: d.id, task: t });
+  }));
+  projTasks.sort((a, b) => (a.task.done - b.task.done)
+    || a.ymd.localeCompare(b.ymd));
+  if (!projTasks.length) {
+    taskCard.appendChild(U.make('div', { class: 'empty',
+      text: 'Keine Aufgaben mit diesem Projekt verknüpft.' }));
+  }
+  projTasks.forEach(({ ymd, task }) => {
+    const row = U.make('div', { class: 'list-row clickable' }, [
+      U.make('span', { class: 'lr-icon', text: task.done ? '☑' : '☐' }),
+      U.make('div', { class: 'lr-body' }, [
+        U.make('div', { class: 'lr-title',
+          style: task.done ? 'text-decoration:line-through;color:var(--muted)' : '',
+          text: task.text }),
+        U.make('div', { class: 'lr-meta', text: U.shortDate(ymd) })
+      ]),
+      U.make('span', { class: 'lr-arrow', text: '›' })
+    ]);
+    row.addEventListener('click', () => {
+      Calendar.state.day = ymd;
+      UI._collSub = null;
+      UI.render('day');
+    });
+    taskCard.appendChild(row);
+  });
+  main.appendChild(taskCard);
+
+  /* --- Löschen --- */
+  const danger = U.make('div', { class: 'card' });
+  danger.appendChild(U.make('div', { class: 'card-title' }, 'Aktionen'));
+  const delBtn = U.make('button', { class: 'btn btn-danger',
+    text: 'Projekt löschen' });
+  delBtn.addEventListener('click', async () => {
+    if (!confirm(`Projekt „${p.name}" wirklich löschen?`)) return;
+    await DB.del('projects', p.id);
+    U.toast('Projekt gelöscht');
+    UI._collSub = null;
+    UI.render('collections');
+  });
+  danger.appendChild(delBtn);
+  main.appendChild(danger);
+};
+
+/* ====================================================================== *
+ *  Personen-Detailseite
+ * ====================================================================== */
+UI._renderPersonDetail = async function (main, p) {
+  const refs = await Backlinks.findReferences(p.name);
+
+  main.appendChild(U.make('div', { class: 'view-head' }, [
+    U.make('h1', { class: 'view-title', text: '@' + p.name })
+  ]));
+
+  if ((p.tags || []).length) {
+    main.appendChild(U.make('div', { class: 'tag-pills' },
+      p.tags.map((t) => U.make('span', { class: 'pill', text: t }))));
+  }
+
+  /* --- Bearbeiten --- */
+  const card = U.make('div', { class: 'card', style: 'margin-top:1rem' });
+  card.appendChild(U.make('div', { class: 'card-title' }, 'Bearbeiten'));
+  const nameInp = U.make('input', { type: 'text', value: p.name });
+  const emailInp = U.make('input', { type: 'email', value: p.email || '',
+    placeholder: 'E-Mail (optional)' });
+  const tagsInp = U.make('input', { type: 'text',
+    value: (p.tags || []).join(', '),
+    placeholder: 'Tags, durch Komma getrennt' });
+  const saveBtn = U.make('button', { class: 'btn btn-primary', text: 'Speichern' });
+  saveBtn.addEventListener('click', async () => {
+    if (!nameInp.value.trim()) { U.toast('Name fehlt', 'warn'); return; }
+    p.name = nameInp.value.trim();
+    p.email = emailInp.value.trim();
+    p.tags = tagsInp.value.split(',').map((s) => s.trim()).filter(Boolean);
+    await DB.put('people', p);
+    U.toast('Gespeichert', 'ok');
+    UI.render('collections');
+  });
+  card.appendChild(U.make('div', { class: 'field' }, [
+    U.make('label', { text: 'Name' }), nameInp]));
+  card.appendChild(U.make('div', { class: 'field' }, [
+    U.make('label', { text: 'E-Mail' }), emailInp]));
+  card.appendChild(U.make('div', { class: 'field' }, [
+    U.make('label', { text: 'Tags' }), tagsInp]));
+  card.appendChild(saveBtn);
+  main.appendChild(card);
+
+  /* --- Verknüpfte Tage --- */
+  const refCard = U.make('div', { class: 'card' });
+  refCard.appendChild(U.make('div', { class: 'card-title' }, 'Verknüpfte Tage'));
+  refCard.appendChild(U.make('div', { class: 'muted', style: 'margin-bottom:.4rem',
+    text: 'Tage, die @' + p.name + ' in Journal-Blöcken erwähnen.' }));
+  UI._renderRefList(refCard, refs, 'Noch keine verknüpften Tage.');
+  main.appendChild(refCard);
+
+  /* --- Löschen --- */
+  const danger = U.make('div', { class: 'card' });
+  danger.appendChild(U.make('div', { class: 'card-title' }, 'Aktionen'));
+  const delBtn = U.make('button', { class: 'btn btn-danger',
+    text: 'Person löschen' });
+  delBtn.addEventListener('click', async () => {
+    if (!confirm(`Person „${p.name}" wirklich löschen?`)) return;
+    await DB.del('people', p.id);
+    U.toast('Person gelöscht');
+    UI._collSub = null;
+    UI.render('collections');
+  });
+  danger.appendChild(delBtn);
+  main.appendChild(danger);
+};
+
+/* ====================================================================== *
+ *  Wissens-Detailseite
+ * ====================================================================== */
+UI._renderKnowledgeDetail = async function (main, k) {
+  await Backlinks.refreshKnowledgeBacklinks();
+  const fresh = await DB.get('knowledge', k.id) || k;
+
+  main.appendChild(U.make('div', { class: 'view-head' }, [
+    U.make('h1', { class: 'view-title', text: fresh.title })
+  ]));
+
+  /* --- Bearbeiten --- */
+  const card = U.make('div', { class: 'card' });
+  card.appendChild(U.make('div', { class: 'card-title' }, 'Bearbeiten'));
+  const titleInp = U.make('input', { type: 'text', value: fresh.title });
+  const excerptInp = U.make('textarea', { rows: '5',
+    placeholder: 'Zusammenfassung / Zitat' });
+  excerptInp.value = fresh.excerpt || '';
+  const sourceInp = U.make('input', { type: 'text',
+    value: fresh.source || '', placeholder: 'Quelle' });
+  const tagsInp = U.make('input', { type: 'text',
+    value: (fresh.tags || []).join(', '), placeholder: 'Tags, durch Komma' });
+  const saveBtn = U.make('button', { class: 'btn btn-primary', text: 'Speichern' });
+  saveBtn.addEventListener('click', async () => {
+    if (!titleInp.value.trim()) { U.toast('Titel fehlt', 'warn'); return; }
+    fresh.title = titleInp.value.trim();
+    fresh.excerpt = excerptInp.value.trim();
+    fresh.source = sourceInp.value.trim();
+    fresh.tags = tagsInp.value.split(',').map((s) => s.trim()).filter(Boolean);
+    await DB.put('knowledge', fresh);
+    await Backlinks.refreshKnowledgeBacklinks();
+    U.toast('Gespeichert', 'ok');
+    UI.render('collections');
+  });
+  card.appendChild(U.make('div', { class: 'field' }, [
+    U.make('label', { text: 'Titel' }), titleInp]));
+  card.appendChild(U.make('div', { class: 'field' }, [
+    U.make('label', { text: 'Inhalt' }), excerptInp]));
+  card.appendChild(U.make('div', { class: 'field' }, [
+    U.make('label', { text: 'Quelle' }), sourceInp]));
+  card.appendChild(U.make('div', { class: 'field' }, [
+    U.make('label', { text: 'Tags' }), tagsInp]));
+  card.appendChild(saveBtn);
+  main.appendChild(card);
+
+  /* --- Zitierende Tage --- */
+  const refCard = U.make('div', { class: 'card' });
+  refCard.appendChild(U.make('div', { class: 'card-title' }, 'Zitiert in'));
+  refCard.appendChild(U.make('div', { class: 'muted', style: 'margin-bottom:.4rem',
+    text: 'Tage, die [[' + fresh.title + ']] in Journal-Blöcken zitieren.' }));
+  const refs = (fresh.backlinks || []).map((ymd) => ({ ymd, snippet: '' }));
+  UI._renderRefList(refCard, refs, 'Noch nicht zitiert.');
+  main.appendChild(refCard);
+
+  /* --- Löschen --- */
+  const danger = U.make('div', { class: 'card' });
+  danger.appendChild(U.make('div', { class: 'card-title' }, 'Aktionen'));
+  const delBtn = U.make('button', { class: 'btn btn-danger',
+    text: 'Eintrag löschen' });
+  delBtn.addEventListener('click', async () => {
+    if (!confirm(`„${fresh.title}" wirklich löschen?`)) return;
+    await DB.del('knowledge', fresh.id);
+    U.toast('Wissen gelöscht');
+    UI._collSub = null;
+    UI.render('collections');
+  });
+  danger.appendChild(delBtn);
+  main.appendChild(danger);
+};
+
+/* ====================================================================== *
+ *  Benutzerdefinierte-Sammlung-Detailseite
+ * ====================================================================== */
+UI._renderCustomCollDetail = async function (main, coll) {
+  const fields = coll.custom_fields || [];
+
+  main.appendChild(U.make('div', { class: 'view-head' }, [
+    U.make('h1', { class: 'view-title', text: coll.name }),
+    U.make('div', { class: 'view-sub',
+      text: `${(coll.entries || []).length} Einträge · ${fields.length} Felder` })
+  ]));
+
+  /* --- Tabelle vorhandener Einträge --- */
+  const tableCard = U.make('div', { class: 'card' });
+  tableCard.appendChild(U.make('div', { class: 'card-title' }, 'Einträge'));
+
+  if (!(coll.entries || []).length) {
+    tableCard.appendChild(U.make('div', { class: 'empty',
+      text: 'Noch keine Einträge.' }));
+  } else {
+    const table = U.make('table', { class: 'data-table' });
+    const thead = U.make('tr', {});
+    fields.forEach((f) => thead.appendChild(U.make('th', { text: f.label })));
+    thead.appendChild(U.make('th', { text: '' }));
+    table.appendChild(thead);
+
+    (coll.entries || []).forEach((entry) => {
+      const tr = U.make('tr', {});
+      fields.forEach((f) => tr.appendChild(
+        U.make('td', { text: entry[f.key] || '—' })));
+      const del = U.make('button', { class: 'rl-del', title: 'Löschen' }, '✕');
+      del.addEventListener('click', async () => {
+        coll.entries = coll.entries.filter((e) => e.id !== entry.id);
+        await DB.put('collections', coll);
+        UI.render('collections');
+      });
+      tr.appendChild(U.make('td', {}, del));
+      table.appendChild(tr);
+    });
+    tableCard.appendChild(U.make('div', { class: 'table-scroll' }, [table]));
+  }
+  main.appendChild(tableCard);
+
+  /* --- Neuer Eintrag --- */
+  const newCard = U.make('div', { class: 'card' });
+  newCard.appendChild(U.make('div', { class: 'card-title' }, 'Neuer Eintrag'));
+  const inputs = {};
+  fields.forEach((f) => {
+    let inp;
+    if (f.type === 'select') {
+      inp = U.make('select', {});
+      inp.appendChild(U.make('option', { value: '' }, '—'));
+      (f.options || []).forEach((o) =>
+        inp.appendChild(U.make('option', { value: o }, o)));
+    } else {
+      inp = U.make('input', { type: f.type === 'date' ? 'date' : 'text',
+        placeholder: f.label });
+    }
+    inputs[f.key] = inp;
+    newCard.appendChild(U.make('div', { class: 'field' }, [
+      U.make('label', { text: f.label }), inp]));
+  });
+  const addBtn = U.make('button', { class: 'btn btn-primary',
+    text: '+ Eintrag hinzufügen' });
+  addBtn.addEventListener('click', async () => {
+    const entry = { id: U.uuid() };
+    fields.forEach((f) => { entry[f.key] = inputs[f.key].value; });
+    coll.entries = coll.entries || [];
+    coll.entries.push(entry);
+    await DB.put('collections', coll);
+    UI.render('collections');
+  });
+  newCard.appendChild(addBtn);
+  main.appendChild(newCard);
+
+  /* --- Löschen --- */
+  const danger = U.make('div', { class: 'card' });
+  danger.appendChild(U.make('div', { class: 'card-title' }, 'Aktionen'));
+  const delBtn = U.make('button', { class: 'btn btn-danger',
+    text: 'Sammlung löschen' });
+  delBtn.addEventListener('click', async () => {
+    if (!confirm(`Sammlung „${coll.name}" wirklich löschen?`)) return;
+    await DB.del('collections', coll.id);
+    U.toast('Sammlung gelöscht');
+    UI._collSub = null;
+    UI.render('collections');
+  });
+  danger.appendChild(delBtn);
+  main.appendChild(danger);
 };
 
 /* --- Projekt-Modal (neu) ----------------------------------------------- */
@@ -3568,7 +4167,8 @@ UI.renderSettings = async function (main) {
   themeCard.appendChild(U.make('div', { class: 'card-title' }, 'Darstellung'));
 
   const themeSel = U.make('select', {});
-  [['system', 'System folgen'], ['light', 'Hell'], ['dark', 'Dunkel']]
+  [['system', 'System folgen'], ['light', 'Hell'], ['dark', 'Dunkel'],
+   ['mono', 'Schwarz-Weiß']]
     .forEach(([v, l]) => themeSel.appendChild(U.make('option', { value: v }, l)));
   themeSel.value = U.lsGet('theme', 'system');
   themeSel.addEventListener('change', () => {
@@ -3576,7 +4176,7 @@ UI.renderSettings = async function (main) {
     U.lsSet('theme', themeSel.value);
   });
   themeCard.appendChild(UI._settingRow('Farbschema',
-    'Hell, dunkel oder der Systemvorgabe folgen.', themeSel));
+    'Hell, dunkel, schwarz-weiß oder der Systemvorgabe folgen.', themeSel));
 
   const hapticSw = UI._switch(U.lsGet('haptic', true));
   hapticSw.input.addEventListener('change', () => {
@@ -3846,10 +4446,10 @@ const Migration = {
 const App = {
   deferredPrompt: null,
 
-  /* Theme anwenden (system | light | dark). */
+  /* Theme anwenden (system | light | dark | mono). */
   applyTheme(mode) {
     const root = document.documentElement;
-    if (mode === 'light' || mode === 'dark') {
+    if (mode === 'light' || mode === 'dark' || mode === 'mono') {
       root.setAttribute('data-theme', mode);
     } else {
       root.removeAttribute('data-theme');     // System-Präferenz greift
@@ -3860,7 +4460,11 @@ const App = {
   bindGlobalEvents() {
     /* Navigation (Sidebar + Bottom-Nav). */
     U.qsa('[data-nav]').forEach((btn) => {
-      btn.addEventListener('click', () => UI.render(btn.dataset.nav));
+      btn.addEventListener('click', () => {
+        // Beim erneuten Klick auf "Sammlungen" zur Übersicht zurück.
+        if (btn.dataset.nav === 'collections') UI._collSub = null;
+        UI.render(btn.dataset.nav);
+      });
     });
 
     /* Sidebar ein-/ausklappen. */
@@ -3868,13 +4472,16 @@ const App = {
       U.el('app').classList.toggle('sidebar-collapsed');
     });
 
-    /* Theme-Toggle in der Topbar (zyklisch). */
+    /* Theme-Toggle in der Topbar (zyklisch: system → light → dark → mono). */
     U.el('theme-toggle').addEventListener('click', () => {
+      const cycle = ['system', 'light', 'dark', 'mono'];
       const cur = U.lsGet('theme', 'system');
-      const next = cur === 'system' ? 'light' : cur === 'light' ? 'dark' : 'system';
+      const next = cycle[(cycle.indexOf(cur) + 1) % cycle.length];
       App.applyTheme(next);
       U.lsSet('theme', next);
-      U.toast('Theme: ' + next);
+      const label = { system: 'System', light: 'Hell',
+        dark: 'Dunkel', mono: 'Schwarz-Weiß' }[next];
+      U.toast('Theme: ' + label);
     });
 
     /* Hilfe-Overlay. */
