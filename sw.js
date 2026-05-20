@@ -9,7 +9,7 @@
 
 'use strict';
 
-const CACHE_NAME = 'bujo_pwa_v1';
+const CACHE_NAME = 'bujo_pwa_v2';
 
 /* Basisverzeichnis aus dem SW-Standort ableiten (z. B. "/repo/" auf GH Pages
  * oder "/" auf localhost). So funktionieren die Cache-Einträge überall. */

@@ -1501,7 +1501,7 @@ const UI = {
     }
 
     // Mobile: Sidebar nach Navigation einklappen.
-    if (window.matchMedia('(max-width: 640px)').matches) {
+    if (window.matchMedia('(max-width: 768px)').matches) {
       U.el('app').classList.add('sidebar-collapsed');
     }
   },
@@ -4694,6 +4694,11 @@ const App = {
     // Persistierte Einstellungen anwenden.
     App.applyTheme(U.lsGet('theme', 'system'));
     CONFIG.DEBUG = U.lsGet('debug', CONFIG.DEBUG);
+
+    // Auf Mobile / Tablet die Sidebar standardmäßig eingeklappt starten.
+    if (window.matchMedia('(max-width: 1024px)').matches) {
+      U.el('app').classList.add('sidebar-collapsed');
+    }
 
     // IndexedDB öffnen.
     try {
